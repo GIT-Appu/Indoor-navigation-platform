@@ -3,6 +3,8 @@
 > Turn-by-turn indoor navigation for college campuses — including real-time 3D positioning across floors, corridors, staircases, lifts, and ramps.
 
 ---
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/34c0d50e-8c6e-45a1-af64-a092ff8489e1" />
+
 
 ## The Problem
 
