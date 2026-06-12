@@ -3,7 +3,7 @@ import {
   listCampuses, createCampus, deleteCampus
 } from '../api/campuses'
 import {
-  listBuildings, createBuilding, createFloor, updateFloor
+  listBuildings, createBuilding, createFloor, uploadFloorPlan, updateFloor
 } from '../api/structure'
 import {
   listCampusNodes, listNodes, createNode, updateNode, deleteNode,
@@ -14,7 +14,7 @@ import { isMockMode } from '../context/AuthContext'
 import { dijkstra } from '../utils/dijkstra'
 import {
   School, Compass, Layers, Plus, Trash2, HelpCircle, ChevronDown, ChevronUp,
-  ZoomIn, ZoomOut, RotateCcw, ArrowUp, ArrowLeft, ArrowRight,
+  UploadCloud, ZoomIn, ZoomOut, RotateCcw, ArrowUp, ArrowLeft, ArrowRight,
   CheckCircle, Route, Link2, PlusCircle, MousePointer, X, Sliders
 } from 'lucide-react'
 
@@ -71,6 +71,7 @@ export default function Dashboard() {
   const [openBuildingId, setOpenBuildingId] = useState('')
   const [loadingCampuses, setLoadingCampuses] = useState(true)
   const [loadingMap, setLoadingMap] = useState(false)
+  const [uploading, setUploading] = useState(false)
 
   // Calibration states
   const [showCalibrationHUD, setShowCalibrationHUD] = useState(false)
@@ -483,6 +484,25 @@ export default function Dashboard() {
     }
   }
 
+  // File plan upload
+  const handleUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file || !activeFloor) return
+    try {
+      setUploading(true)
+      const updated = await uploadFloorPlan(activeFloor.id, file)
+      setActiveFloor(updated)
+      setBuildings(prev => prev.map(b => ({
+        ...b,
+        floors: b.floors.map(f => f.id === updated.id ? updated : f)
+      })))
+    } catch (err) {
+      alert('Failed to upload plan: ' + err.message)
+    } finally {
+      setUploading(false)
+    }
+  }
+
   // Dragging reposition handlers
   const handleNodeMouseDown = (node, e) => {
     if (tool !== 'select') return
@@ -857,6 +877,11 @@ export default function Dashboard() {
                                     <Layers size={13} />
                                     {f.name}
                                   </span>
+                                  {f.floor_plan_url ? (
+                                    <span style={{ color: 'var(--success)', fontSize: '10px' }}>plan ✓</span>
+                                  ) : (
+                                    <span style={{ color: 'var(--text-muted)', fontSize: '10px' }}>no plan</span>
+                                  )}
                                 </button>
                               ))
                           )}
@@ -1017,6 +1042,12 @@ export default function Dashboard() {
                     <Route size={14} />
                     Test Route
                   </button>
+
+                  <label className="upload-btn" style={{ padding: '6px 12px' }}>
+                    <UploadCloud size={14} />
+                    {uploading ? 'Uploading...' : 'Upload Plan'}
+                    <input type="file" accept="image/*" onChange={handleUpload} hidden disabled={uploading} />
+                  </label>
 
                   {activeFloor.floor_plan_url && (
                     <button
