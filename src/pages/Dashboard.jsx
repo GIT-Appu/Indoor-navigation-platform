@@ -15,7 +15,7 @@ import { dijkstra } from '../utils/dijkstra'
 import {
   School, Compass, Layers, Plus, Trash2, HelpCircle, ChevronDown, ChevronUp,
   UploadCloud, ZoomIn, ZoomOut, RotateCcw, ArrowUp, ArrowLeft, ArrowRight,
-  ArrowUpDown, CheckCircle, Route, Link2, PlusCircle, MousePointer, X, Sliders, Search
+  ArrowUpDown, CheckCircle, Route, Link2, PlusCircle, MousePointer, X, Search, Sliders
 } from 'lucide-react'
 
 const NODE_TYPES = ['room', 'corridor', 'stair', 'lift', 'entrance', 'poi']
@@ -122,6 +122,7 @@ export default function Dashboard() {
   const [refOpacity, setRefOpacity] = useState(0.4)
 
   // In-app Modal System states
+  // activeModal: null | 'add_node' | 'edit_edge' | 'delete_node' | 'delete_campus'
   const [activeModal, setActiveModal] = useState(null)
   const [modalCoords, setModalCoords] = useState({ x: 0, y: 0 })
   const [modalInputVal, setModalInputVal] = useState('')
@@ -165,6 +166,7 @@ export default function Dashboard() {
       const bList = await listBuildings(selectedCampusId)
       setBuildings(bList)
       
+      // Load all campus nodes and edges for Dijkstra route computation
       const campusNodes = await listCampusNodes(selectedCampusId)
       setAllCampusNodes(campusNodes)
       const nodeIds = campusNodes.map(n => n.id)
@@ -266,6 +268,7 @@ export default function Dashboard() {
   const centerOnNode = (node) => {
     if (!svgRef.current) return
     const rect = svgRef.current.getBoundingClientRect()
+    // Formula to center coordinates on viewport based on current scale
     const centeredPanX = (rect.width / 2) - ((node.x / 1000) * rect.width * scale)
     const shadowPanY = (rect.height / 2) - ((node.y / 1000) * rect.height * scale)
     setPan({ x: centeredPanX, y: shadowPanY })
@@ -310,7 +313,7 @@ export default function Dashboard() {
       setNewFloorName('')
       setNewFloorLevel('0')
       await loadCampusStructures()
-      setActiveFloor(result)
+      setActiveFloor(result) // Load newly created floor automatically
     } catch (err) {
       alert('Failed to add floor: ' + err.message)
     }
@@ -332,6 +335,7 @@ export default function Dashboard() {
     if (tool !== 'add' || draggedNodeId || isPanning || !activeFloor) return
     const { x, y } = toSvgCoords(e.clientX, e.clientY)
     
+    // Open the custom in-app modal instead of browser prompt!
     setModalCoords({ x, y })
     setModalInputVal('')
     setModalError('')
@@ -373,6 +377,8 @@ export default function Dashboard() {
       const dist = Math.max(1, Math.round(Math.hypot(node.x - connectFrom.x, node.y - connectFrom.y) * 0.08))
       try {
         const edge = await createEdge(connectFrom.id, node.id, dist)
+        
+        // Update local and global edges
         setEdges(prev => [...prev, edge])
         setAllCampusEdges(prev => [...prev, edge])
       } catch (err) {
@@ -398,7 +404,7 @@ export default function Dashboard() {
   const handleCreateCrossFloorLink = async () => {
     if (!connectFrom || !targetCrossFloorNodeId) return
     try {
-      const edge = await createEdge(connectFrom.id, targetCrossFloorNodeId, 80) // 80 standard travel weight
+      const edge = await createEdge(connectFrom.id, targetCrossFloorNodeId, 80) // 80 standard vertical travel weight
       setEdges(prev => [...prev, edge])
       setAllCampusEdges(prev => [...prev, edge])
       setTargetCrossFloorNodeId('')
@@ -536,9 +542,10 @@ export default function Dashboard() {
     }
 
     setScanning(true)
-    setScanProgress('Loading blueprint details...')
+    setScanProgress('Loading blueprint blueprint details...')
 
     try {
+      // Clear existing nodes and edges on this floor first to avoid duplicates
       setScanProgress('Clearing existing layout database entries...')
       const existingNodes = await listNodes(activeFloor.id)
       for (const n of existingNodes) {
@@ -547,6 +554,7 @@ export default function Dashboard() {
       setNodes([])
       setEdges([])
 
+      // 1. Fetch natural dimensions to map ratios correctly
       const img = new Image()
       img.src = activeFloor.floor_plan_url
       await new Promise((resolve, reject) => {
@@ -559,6 +567,7 @@ export default function Dashboard() {
 
       setScanProgress('Initializing OCR engine worker...')
 
+      // 2. Perform OCR recognition
       const result = await window.Tesseract.recognize(
         activeFloor.floor_plan_url,
         'eng',
@@ -573,35 +582,47 @@ export default function Dashboard() {
         }
       )
 
+      // 3. Spatially group close/stacked words and clean up size-dimension noise
       const words = result.data.words || []
       
+      // Filter out low confidence noise & size-dimension characters
       const cleanWords = words.filter(w => {
         const txt = w.text.trim()
         if (w.confidence < 45 || txt.length === 0) return false
         
+        // Strip out non-alphanumeric border symbols for cleaner filtering check
         const cleanedText = txt.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '')
         const lower = cleanedText.toLowerCase()
 
         if (lower.length === 0) return false
         if (lower.length === 1 && !lower.match(/[a-z0-9]/i)) return false
 
+        // Filter out legend and scale headers at the very top of the blueprint canvas (y < 13% of height)
         const wordY = (w.bbox.y0 + w.bbox.y1) / 2
         const relY = wordY / origHeight
         if (relY < 0.13) return false
 
+        // Check if word looks like a dimension measurement
+        // 1. Matches decimal coordinates like "8.0", "7.0", "4.0", "5.0", "8.0m", "4.0m"
         if (lower.match(/^\d+\.\d+(m|cm)?$/)) return false;
+        // 2. Matches dimension ranges like "8.0mx7.0m", "8mx7m", "8x7"
         if (lower.match(/^\d+(\.\d+)?(m|cm)?x\d+(\.\d+)?(m|cm)?$/)) return false;
+        // 3. Matches standalone dimensions with suffix like "8m", "80m", "70m", "2m", "10m"
         if (lower.match(/^\d+(m|cm)$/)) return false;
+        // 4. Matches leading x multiplier like "x7.0m", "x7m", "x7.0", "x7"
         if (lower.match(/^x\d+(\.\d+)?(m|cm)?$/)) return false;
 
+        // Filter out scale terms and layout labels
         const scaleWords = ['scale', 'legend', 'drawing', 'plan', 'blueprint', 'structure', '1cm', '2m', '4m', '6m', '8m', '10m', '1cm=2m', '1cm='];
         if (scaleWords.some(term => lower.includes(term))) return false;
 
+        // Filter out pure punctuation junk lines/walls
         if (lower.match(/^[_\-=+*|\\/()\[\]{}&^%$#@!~`?.;:]+$/)) return false;
 
         return true
       })
 
+      // Group words into label clusters using horizontal and vertical proximity
       const shouldGroup = (w1, w2) => {
         const h1 = w1.bbox.y1 - w1.bbox.y0
         const h2 = w2.bbox.y1 - w2.bbox.y0
@@ -613,6 +634,7 @@ export default function Dashboard() {
         const xOverlap = Math.max(0, Math.min(w1.bbox.x1, w2.bbox.x1) - Math.max(w1.bbox.x0, w2.bbox.x0))
         const yOverlap = Math.max(0, Math.min(w1.bbox.y1, w2.bbox.y1) - Math.max(w1.bbox.y0, w2.bbox.y0))
 
+        // Horizontally adjacent on same line (within 1.5 times the font height gap)
         if (yOverlap > avgHeight * 0.3) {
           const hGap = Math.min(
             Math.abs(w1.bbox.x0 - w2.bbox.x1),
@@ -621,6 +643,7 @@ export default function Dashboard() {
           if (hGap < avgHeight * 1.5) return true
         }
 
+        // Vertically stacked room elements (e.g. "CLASSROOM" above "101")
         if (xOverlap > Math.min(w1Width, w2Width) * 0.15) {
           const vGap = Math.min(
             Math.abs(w1.bbox.y0 - w2.bbox.y1),
@@ -632,6 +655,7 @@ export default function Dashboard() {
         return false
       }
 
+      // Single-linkage clustering parent mappings
       const parent = Array.from({ length: cleanWords.length }, (_, i) => i)
       const find = (i) => {
         while (parent[i] !== i) {
@@ -648,6 +672,7 @@ export default function Dashboard() {
         }
       }
 
+      // Merge adjacent nodes
       for (let i = 0; i < cleanWords.length; i++) {
         for (let j = i + 1; j < cleanWords.length; j++) {
           if (shouldGroup(cleanWords[i], cleanWords[j])) {
@@ -656,6 +681,7 @@ export default function Dashboard() {
         }
       }
 
+      // Group words list by roots
       const clusters = new Map()
       for (let i = 0; i < cleanWords.length; i++) {
         const root = find(i)
@@ -669,6 +695,7 @@ export default function Dashboard() {
       const connectionNodes = []
 
       for (const [_, clusterWords] of clusters) {
+        // Sort cluster words from top-to-bottom, then left-to-right
         clusterWords.sort((a, b) => {
           const yDiff = Math.abs(a.bbox.y0 - b.bbox.y0)
           const avgHeight = ((a.bbox.y1 - a.bbox.y0) + (b.bbox.y1 - b.bbox.y0)) / 2
@@ -678,12 +705,14 @@ export default function Dashboard() {
           return a.bbox.y0 - b.bbox.y0
         })
 
+        // Clean each word individually first
         const cleanedWordsList = clusterWords
           .map(w => {
             return w.text.trim().replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '')
           })
           .filter(Boolean)
 
+        // Remove consecutive duplicate words (case-insensitive)
         const uniqueWords = []
         for (const w of cleanedWordsList) {
           if (uniqueWords.length === 0 || uniqueWords[uniqueWords.length - 1].toLowerCase() !== w.toLowerCase()) {
@@ -693,6 +722,7 @@ export default function Dashboard() {
 
         if (uniqueWords.length === 0) continue
 
+        // Format to a clean, readable Title Case name
         const rawText = uniqueWords.join(' ')
         if (rawText.length < 2) continue
 
@@ -702,6 +732,7 @@ export default function Dashboard() {
             .split(/\s+/)
             .map(word => {
               if (!word) return ''
+              // Number with optional suffix letter, or single digit/letter: e.g. "101", "101A", "A", "B"
               if (word.match(/^\d+[a-z]?$/i) || word.length === 1) {
                 return word.toUpperCase()
               }
@@ -715,6 +746,7 @@ export default function Dashboard() {
 
         const cleanLabel = toTitleCase(rawText)
 
+        // Enclosing bounding box
         const bbox = {
           x0: Math.min(...clusterWords.map(w => w.bbox.x0)),
           y0: Math.min(...clusterWords.map(w => w.bbox.y0)),
@@ -725,9 +757,11 @@ export default function Dashboard() {
         const x_img = (bbox.x0 + bbox.x1) / 2
         const y_img = (bbox.y0 + bbox.y1) / 2
 
+        // Map to 1000px viewport
         const x = Math.round((x_img / origWidth) * 1000)
         const y = Math.round((y_img / origHeight) * 1000)
 
+        // Classify node types based on cleaned label text
         const lower = cleanLabel.toLowerCase()
         let type = 'room'
         if (lower.includes('stair') || lower.includes('step') || lower.includes('escalator')) {
@@ -742,6 +776,7 @@ export default function Dashboard() {
           type = 'poi'
         }
 
+        // Write new node pin
         const node = await createNode(activeFloor.id, { type, label: cleanLabel, x, y })
         if (type === 'room' || type === 'poi') {
           roomNodes.push(node)
@@ -758,12 +793,15 @@ export default function Dashboard() {
         const autoEdges = []
         const corridorNodes = []
 
+        // Horizontal hallway lines based on courtyard rectangular loop topology
         const TOP_CORRIDOR_Y = 480
         const BTM_CORRIDOR_Y = 620
 
+        // A. Create projected corridor nodes for each room
         for (const room of roomNodes) {
           const targetY = room.y < 520 ? TOP_CORRIDOR_Y : BTM_CORRIDOR_Y
           
+          // Avoid corridor node clutter by sharing nodes within 40px horizontally
           let corrNode = corridorNodes.find(c => c.y === targetY && Math.abs(c.x - room.x) < 40)
           
           if (!corrNode) {
@@ -781,6 +819,7 @@ export default function Dashboard() {
           autoEdges.push(edge)
         }
 
+        // B. Sort corridor nodes horizontally and link them
         const topHalls = corridorNodes.filter(c => c.y === TOP_CORRIDOR_Y).sort((a, b) => a.x - b.x)
         const btmHalls = corridorNodes.filter(c => c.y === BTM_CORRIDOR_Y).sort((a, b) => a.x - b.x)
 
@@ -800,6 +839,7 @@ export default function Dashboard() {
           autoEdges.push(edge)
         }
 
+        // C. Form rectangular hallway loop connecting left-end and right-end hallways
         if (topHalls.length > 0 && btmHalls.length > 0) {
           const leftTop = topHalls[0]
           const leftBtm = btmHalls[0]
@@ -814,6 +854,7 @@ export default function Dashboard() {
           autoEdges.push(rightEdge)
         }
 
+        // D. Connect stairs/lifts/entrances directly to the nearest hallway corridor node
         const allHalls = [...topHalls, ...btmHalls]
         if (allHalls.length > 0) {
           for (const conn of connectionNodes) {
@@ -914,13 +955,14 @@ export default function Dashboard() {
     setPan({ x: 0, y: 0 })
   }
 
-  // Dijkstra Solver
+  // Dijkstra Solver (Runs campus-wide on all nodes & edges!)
   const pathResult = pathFrom && pathTo ? dijkstra(allCampusNodes, allCampusEdges, pathFrom.id, pathTo.id) : null
   const pathSet = new Set(pathResult?.path ?? [])
 
   // Instruction Builder
   const routeInstructions = pathResult ? generateInstructions(pathResult.path, allCampusNodes) : []
 
+  // Generate instructions array
   function generateInstructions(path, nodesData) {
     if (!path || path.length < 2) return []
     const steps = []
@@ -953,9 +995,42 @@ export default function Dashboard() {
       const prev = nodeMap.get(prevId)
       const dist = getDist(prev, cur)
 
+      // Level / floor traversal
+      if (cur.floor_id !== prev.floor_id) {
+        const floorsMap = new Map()
+        buildings.forEach(b => {
+          (b.floors || []).forEach(f => {
+            floorsMap.set(f.id, f)
+          })
+        })
+        const prevFloor = floorsMap.get(prev.floor_id)
+        const curFloor = floorsMap.get(cur.floor_id)
+        const transitionType = prev.type === 'lift' ? 'elevator' : 'stairs'
+        
+        let direction = ''
+        if (prevFloor && curFloor) {
+          if (curFloor.level > prevFloor.level) {
+            direction = ' UP'
+          } else if (curFloor.level < prevFloor.level) {
+            direction = ' DOWN'
+          }
+        }
+        
+        const destFloorName = curFloor ? curFloor.name : 'the target floor'
+        
+        steps.push({
+          type: 'floor_change',
+          text: `Take the ${transitionType}${direction} from ${prev.label} to ${destFloorName}`,
+          floorId: cur.floor_id,
+          nodeId: cur.id
+        })
+        continue
+      }
+
       let type = 'straight'
       let text = `Walk straight ${dist}m to ${cur.label}`
 
+      // Direction calculation based on angle of turn
       if (i > 1) {
         const prevPrevId = path[i - 2]
         const prevPrev = nodeMap.get(prevPrevId)
@@ -1004,6 +1079,7 @@ export default function Dashboard() {
     return steps
   }
 
+  // Cross-floor connection targets (Stairs/Lifts on other floors)
   const crossFloorOptions = connectFrom && (connectFrom.type === 'stair' || connectFrom.type === 'lift')
     ? allCampusNodes
         .filter(n => n.id !== connectFrom.id && n.floor_id !== activeFloor?.id && (n.type === 'stair' || n.type === 'lift'))
@@ -1018,11 +1094,13 @@ export default function Dashboard() {
         })
     : []
 
+  // Check which node ID is currently active in the turn directions checklist
   const activeStepNodeId = routeInstructions[activeStepIndex]?.nodeId
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       
+      {/* Dynamic Overlay Modal Layer (No more native prompts/confirms!) */}
       {activeModal && (
         <div style={{
           position: 'fixed',
@@ -1034,7 +1112,8 @@ export default function Dashboard() {
           backdropFilter: 'blur(8px)',
           display: 'grid',
           placeItems: 'center',
-          zIndex: 1000
+          zIndex: 1000,
+          animation: 'fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1)'
         }}>
           <div style={{
             background: 'var(--bg-panel)',
@@ -1043,7 +1122,7 @@ export default function Dashboard() {
             padding: '28px',
             width: '90%',
             maxWidth: '380px',
-            boxShadow: '0 24px 64px rgba(0, 0, 0, 0.5)',
+            boxShadow: '0 24px 64px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.02)',
             display: 'flex',
             flexDirection: 'column',
             gap: '16px',
@@ -1064,9 +1143,10 @@ export default function Dashboard() {
               <X size={18} />
             </button>
 
+            {/* Modal Body Rendering */}
             {activeModal === 'add_node' && (
               <>
-                <h3 style={{ fontSize: '1.25rem' }}>Add Node</h3>
+                <h3 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-display)' }}>Add Node</h3>
                 <p className="muted" style={{ fontSize: '0.8125rem' }}>
                   Label this pin dropped at coordinates ({modalCoords.x}, {modalCoords.y}).
                 </p>
@@ -1088,7 +1168,7 @@ export default function Dashboard() {
 
             {activeModal === 'edit_edge' && modalTarget && (
               <>
-                <h3 style={{ fontSize: '1.25rem' }}>Modify Path</h3>
+                <h3 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-display)' }}>Modify Path</h3>
                 <p className="muted" style={{ fontSize: '0.8125rem' }}>
                   Adjust real-world distance (meters) or remove connection.
                 </p>
@@ -1118,7 +1198,7 @@ export default function Dashboard() {
 
             {activeModal === 'delete_node' && modalTarget && (
               <>
-                <h3 style={{ fontSize: '1.25rem', color: 'var(--danger)' }}>Delete Node?</h3>
+                <h3 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-display)', color: 'var(--danger)' }}>Delete Node?</h3>
                 <p className="muted" style={{ fontSize: '0.8125rem' }}>
                   Are you sure you want to delete node <strong>{modalTarget.label}</strong>? This will remove all its path connections.
                 </p>
@@ -1132,7 +1212,7 @@ export default function Dashboard() {
 
             {activeModal === 'delete_campus' && modalTarget && (
               <>
-                <h3 style={{ fontSize: '1.25rem', color: 'var(--danger)' }}>Delete Campus?</h3>
+                <h3 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-display)', color: 'var(--danger)' }}>Delete Campus?</h3>
                 <p className="muted" style={{ fontSize: '0.8125rem' }}>
                   Are you sure you want to delete campus <strong>{modalTarget.name}</strong> and all its buildings, floors, nodes, and edges? This action cannot be undone.
                 </p>
@@ -1147,6 +1227,7 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* Top Banner Stats Overview */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
         <div>
           <h1>Indoor Map Studio</h1>
@@ -1161,8 +1242,10 @@ export default function Dashboard() {
 
       <div className="studio-container">
         
+        {/* Left selector sidebar */}
         <aside className="studio-sidebar">
           
+          {/* Campus Selector */}
           <div className="sidebar-section">
             <h3>Select Campus</h3>
             {loadingCampuses ? (
@@ -1192,6 +1275,7 @@ export default function Dashboard() {
               </div>
             )}
 
+            {/* Quick Add Campus */}
             <form onSubmit={handleCreateCampus} style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '12px' }}>
               <input 
                 placeholder="New Campus name" 
@@ -1206,6 +1290,7 @@ export default function Dashboard() {
             </form>
           </div>
 
+          {/* Buildings and Floors Accordion */}
           {selectedCampusId && (
             <div className="sidebar-section" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
               <h3>Campus Layout Structures</h3>
@@ -1255,6 +1340,7 @@ export default function Dashboard() {
                               ))
                           )}
                           
+                          {/* Quick Add Floor */}
                           <form 
                             onSubmit={(e) => handleCreateFloor(b.id, e)} 
                             style={{ display: 'flex', gap: '4px', borderTop: '1px solid var(--border)', paddingTop: '8px', marginTop: '4px' }}
@@ -1285,6 +1371,7 @@ export default function Dashboard() {
                 })}
               </div>
 
+              {/* Add Building Form */}
               <form onSubmit={handleCreateBuilding} style={{ display: 'flex', gap: '6px', borderTop: '1px solid var(--border)', paddingTop: '12px' }}>
                 <input 
                   placeholder="New Building name" 
@@ -1300,6 +1387,7 @@ export default function Dashboard() {
             </div>
           )}
 
+          {/* Turn-by-turn Navigation instructions */}
           {pathResult && routeInstructions.length > 0 && (
             <div className="instruction-panel">
               <h3 style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1311,6 +1399,7 @@ export default function Dashboard() {
               
               <div className="instruction-list">
                 {routeInstructions.map((step, idx) => {
+                  const stepFloor = allCampusNodes.find(n => n.id === step.nodeId)?.floor_id
                   const isCurrent = activeStepIndex === idx
                   const isCompleted = idx < activeStepIndex
 
@@ -1320,8 +1409,22 @@ export default function Dashboard() {
                       className={`instruction-step ${isCurrent ? 'active' : ''} ${isCompleted ? 'completed' : ''}`}
                       onClick={() => {
                         setActiveStepIndex(idx)
-                        const stepNode = nodes.find(n => n.id === step.nodeId)
-                        if (stepNode) centerOnNode(stepNode)
+                        
+                        if (stepFloor && stepFloor !== activeFloor?.id) {
+                          const targetFloor = buildings
+                            .flatMap(b => b.floors || [])
+                            .find(f => f.id === stepFloor)
+                          if (targetFloor) {
+                            setActiveFloor(targetFloor)
+                            setTimeout(() => {
+                              const stepNode = allCampusNodes.find(n => n.id === step.nodeId)
+                              if (stepNode) centerOnNode(stepNode)
+                            }, 100)
+                          }
+                        } else {
+                          const stepNode = nodes.find(n => n.id === step.nodeId)
+                          if (stepNode) centerOnNode(stepNode)
+                        }
                       }}
                       title="Click to focus map on this checkpoint"
                     >
@@ -1330,6 +1433,11 @@ export default function Dashboard() {
                       </div>
                       <div className="instruction-step-text" style={{ flex: 1 }}>
                         {step.text}
+                        {stepFloor && stepFloor !== activeFloor?.id && (
+                          <span style={{ display: 'block', fontSize: '9px', color: '#8b5cf6', marginTop: '2px', fontWeight: 600 }}>
+                            (Requires floor transition Lvl)
+                          </span>
+                        )}
                       </div>
                       
                       <input 
@@ -1349,6 +1457,7 @@ export default function Dashboard() {
           )}
         </aside>
 
+        {/* Right canvas layout */}
         <main className="studio-main-panel">
           {!activeFloor ? (
             <div className="floor-studio-empty">
@@ -1363,15 +1472,17 @@ export default function Dashboard() {
           ) : (
             <div className="editor" style={{ position: 'relative' }}>
               
+              {/* Toolbar header */}
               <div className="editor-header">
                 <div>
                   <h3 style={{ fontSize: '1.25rem' }}>{activeFloor.name}</h3>
                   <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    Map blueprint (Draw nodes and corridor paths)
+                    Map blueprint (Draw rooms and corridor paths directly over map)
                   </span>
                 </div>
 
                 <div className="toolbar">
+                  {/* AI Auto-detect rooms button overlay */}
                   {activeFloor.floor_plan_url && (
                     <button 
                       onClick={handleAutoDetectRooms} 
@@ -1444,6 +1555,7 @@ export default function Dashboard() {
                         borderColor: showCalibrationHUD ? 'var(--primary)' : 'var(--border)',
                         padding: '6px 12px'
                       }}
+                      title="Open Floor Plan Calibration Alignment controls"
                     >
                       <Sliders size={14} />
                       Align Map
@@ -1452,6 +1564,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
+              {/* Calibration Alignment Floating HUD Panel */}
               {showCalibrationHUD && (
                 <div className="calibration-hud" onMouseDown={e => e.stopPropagation()}>
                   <h4>
@@ -1590,6 +1703,7 @@ export default function Dashboard() {
                 </div>
               )}
 
+              {/* Map rendering SVG box */}
               <div 
                 className="canvas-wrap"
                 onMouseDown={handleCanvasMouseDown}
@@ -1598,6 +1712,7 @@ export default function Dashboard() {
                 onMouseLeave={handleMouseLeave}
               >
                 
+                {/* AI OCR Scanner Loading overlay */}
                 {scanning && (
                   <div className="ocr-scan-overlay">
                     <div className="scan-line"></div>
@@ -1609,6 +1724,7 @@ export default function Dashboard() {
                   </div>
                 )}
 
+                {/* Cross-Floor connections HUD overlay */}
                 {tool === 'connect' && connectFrom && (connectFrom.type === 'stair' || connectFrom.type === 'lift') && (
                   <div className="cross-floor-hud" onMouseDown={e => e.stopPropagation()}>
                     <h4>Cross-Floor Connection</h4>
@@ -1659,6 +1775,7 @@ export default function Dashboard() {
                   </div>
                 )}
 
+                {/* SVG viewbox representation */}
                 {loadingMap ? (
                   <div className="center" style={{ background: 'transparent', height: '100%' }}>
                     <div className="loading-spinner"></div>
@@ -1672,6 +1789,7 @@ export default function Dashboard() {
                   >
                     <g transform={`translate(${pan.x}, ${pan.y}) scale(${scale})`}>
                       
+                      {/* Reference Floor plan blueprint overlay */}
                       {showRefFloorPlan && refFloorId && (() => {
                         const refFloor = buildings
                           .flatMap(b => b.floors || [])
@@ -1693,6 +1811,7 @@ export default function Dashboard() {
                         )
                       })()}
 
+                      {/* Reference Floor Nodes Overlay */}
                       {showRefNodes && refFloorId && allCampusNodes
                         .filter(n => n.floor_id === refFloorId)
                         .map(refNode => (
@@ -1723,6 +1842,7 @@ export default function Dashboard() {
                           </g>
                         ))}
 
+                      {/* Floor plan blueprint overlay */}
                       {activeFloor.floor_plan_url && (
                         <image 
                           href={activeFloor.floor_plan_url} 
@@ -1736,6 +1856,7 @@ export default function Dashboard() {
                         />
                       )}
 
+                      {/* Map lines rendering */}
                       {edges.map(edge => {
                         const fromNode = nodes.find(n => n.id === edge.from_node_id)
                         const toNode = nodes.find(n => n.id === edge.to_node_id)
@@ -1762,6 +1883,7 @@ export default function Dashboard() {
                               style={inPath ? { animation: 'dash 1s linear infinite', cursor: 'pointer' } : { cursor: 'pointer' }}
                               onClick={(e) => triggerEdgeModal(edge, e)}
                             />
+                            {/* Midpoint Distance Badge */}
                             <g transform={`translate(${midX}, ${midY})`} style={{ pointerEvents: 'none' }}>
                               <rect
                                 x="-14"
@@ -1787,6 +1909,7 @@ export default function Dashboard() {
                         )
                       })}
 
+                      {/* Map nodes points rendering */}
                       {nodes.map(node => {
                         const selected =
                           connectFrom?.id === node.id || 
@@ -1795,6 +1918,40 @@ export default function Dashboard() {
 
                         const inPath = pathSet.has(node.id)
                         const isCurrentGPSNode = activeStepNodeId === node.id
+
+                        // Check if this node is a floor transition point in the active route
+                        let transitionInfo = null
+                        if (pathResult && pathResult.path.length > 0) {
+                          const idx = pathResult.path.indexOf(node.id)
+                          if (idx !== -1) {
+                            // Check next node
+                            if (idx < pathResult.path.length - 1) {
+                              const nextId = pathResult.path[idx + 1]
+                              const nextNode = allCampusNodes.find(n => n.id === nextId)
+                              if (nextNode && nextNode.floor_id !== activeFloor.id) {
+                                const nextFloor = buildings.flatMap(b => b.floors || []).find(f => f.id === nextNode.floor_id)
+                                const isUp = nextFloor && activeFloor && nextFloor.level > activeFloor.level
+                                transitionInfo = {
+                                  dir: isUp ? 'UP' : 'DOWN',
+                                  floorName: nextFloor ? nextFloor.name : 'another floor',
+                                  type: node.type
+                                }
+                              }
+                            }
+                            // Check prev node (arrival transition)
+                            if (!transitionInfo && idx > 0) {
+                              const prevId = pathResult.path[idx - 1]
+                              const prevNode = allCampusNodes.find(n => n.id === prevId)
+                              if (prevNode && prevNode.floor_id !== activeFloor.id) {
+                                const prevFloor = buildings.flatMap(b => b.floors || []).find(f => f.id === prevNode.floor_id)
+                                transitionInfo = {
+                                  isArrival: true,
+                                  floorName: prevFloor ? prevFloor.name : 'another floor'
+                                }
+                              }
+                            }
+                          }
+                        }
 
                         return (
                           <g
@@ -1805,6 +1962,7 @@ export default function Dashboard() {
                             onContextMenu={(e) => triggerDeleteNodeModal(node, e)}
                             className="node-handle"
                           >
+                            {/* Glowing halo indicator for current progressive path check-point */}
                             {isCurrentGPSNode && (
                               <circle 
                                 r="18" 
@@ -1812,6 +1970,17 @@ export default function Dashboard() {
                                 stroke="#10b981" 
                                 strokeWidth="3"
                                 className="pulse-circle"
+                              />
+                            )}
+
+                            {/* Double pulsing vertical transition overlay indicator */}
+                            {transitionInfo && (
+                              <circle
+                                r="20"
+                                fill="none"
+                                stroke={transitionInfo.isArrival ? '#10b981' : '#8b5cf6'}
+                                strokeWidth="2.5"
+                                className="transition-pulse"
                               />
                             )}
 
@@ -1824,6 +1993,34 @@ export default function Dashboard() {
                             />
                             
                             <text x="12" y="4" fill="#e5e7eb">{node.label}</text>
+
+                            {/* Floating connection helper text bubble for active paths crossing levels */}
+                            {transitionInfo && (
+                              <g className="path-transition-badge" transform="translate(0, -22)" style={{ pointerEvents: 'none' }}>
+                                <rect
+                                  x="-70"
+                                  y="-12"
+                                  width="140"
+                                  height="18"
+                                  rx="4"
+                                  fill="#111827"
+                                  stroke={transitionInfo.isArrival ? '#10b981' : '#8b5cf6'}
+                                  strokeWidth="1"
+                                  opacity="0.95"
+                                />
+                                <text
+                                  textAnchor="middle"
+                                  y="0"
+                                  dominantBaseline="central"
+                                  fill="#ffffff"
+                                  style={{ fontSize: '8px', fontWeight: 'bold' }}
+                                >
+                                  {transitionInfo.isArrival 
+                                    ? `← From ${transitionInfo.floorName}`
+                                    : `Transfer ${transitionInfo.dir} to ${transitionInfo.floorName}`}
+                                </text>
+                              </g>
+                            )}
                           </g>
                         )
                       })}
@@ -1831,6 +2028,7 @@ export default function Dashboard() {
                   </svg>
                 )}
 
+                {/* Floating zoom controls HUD */}
                 <div className="zoom-hud">
                   <button onClick={zoomIn} title="Zoom In"><ZoomIn size={15} /></button>
                   <button onClick={zoomOut} title="Zoom Out"><ZoomOut size={15} /></button>
@@ -1839,6 +2037,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
+              {/* Live solving feedback overlay */}
               {pathResult && (
                 <div className="path-info">
                   {pathResult.path.length ? (
@@ -1852,6 +2051,7 @@ export default function Dashboard() {
                 </div>
               )}
 
+              {/* Bottom editor description hint */}
               <p className="hint">
                 <HelpCircle size={14} style={{ color: 'var(--primary)' }} />
                 {tool === 'select' && 'Select tool: Drag nodes to position them. Right-click node to delete. Click edge to delete/edit distance.'}
