@@ -3,7 +3,7 @@ import {
   listCampuses, createCampus, deleteCampus
 } from '../api/campuses'
 import {
-  listBuildings, createBuilding, createFloor
+  listBuildings, createBuilding, createFloor, updateFloor
 } from '../api/structure'
 import {
   listCampusNodes, listNodes, createNode, updateNode, deleteNode,
@@ -15,7 +15,7 @@ import { dijkstra } from '../utils/dijkstra'
 import {
   School, Compass, Layers, Plus, Trash2, HelpCircle, ChevronDown, ChevronUp,
   ZoomIn, ZoomOut, RotateCcw, ArrowUp, ArrowLeft, ArrowRight,
-  CheckCircle, Route, Link2, PlusCircle, MousePointer, X
+  CheckCircle, Route, Link2, PlusCircle, MousePointer, X, Sliders
 } from 'lucide-react'
 
 const NODE_TYPES = ['room', 'corridor', 'stair', 'lift', 'entrance', 'poi']
@@ -71,6 +71,19 @@ export default function Dashboard() {
   const [openBuildingId, setOpenBuildingId] = useState('')
   const [loadingCampuses, setLoadingCampuses] = useState(true)
   const [loadingMap, setLoadingMap] = useState(false)
+
+  // Calibration states
+  const [showCalibrationHUD, setShowCalibrationHUD] = useState(false)
+  const [calibrationX, setCalibrationX] = useState(0)
+  const [calibrationY, setCalibrationY] = useState(0)
+  const [calibrationScale, setCalibrationScale] = useState(1)
+  const [calibrationRotation, setCalibrationRotation] = useState(0)
+
+  // Reference Overlay states
+  const [refFloorId, setRefFloorId] = useState('')
+  const [showRefFloorPlan, setShowRefFloorPlan] = useState(false)
+  const [showRefNodes, setShowRefNodes] = useState(false)
+  const [refOpacity, setRefOpacity] = useState(0.4)
 
   // Creation form states
   const [newCampusName, setNewCampusName] = useState('')
@@ -174,6 +187,69 @@ export default function Dashboard() {
     } finally {
       setLoadingMap(false)
     }
+  }
+
+  // 4. Load calibration settings and auto-configure reference floor overlay
+  useEffect(() => {
+    if (activeFloor) {
+      const cal = activeFloor.metadata?.calibration || { x_offset: 0, y_offset: 0, scale: 1, rotation: 0 }
+      setCalibrationX(cal.x_offset ?? 0)
+      setCalibrationY(cal.y_offset ?? 0)
+      setCalibrationScale(cal.scale ?? 1)
+      setCalibrationRotation(cal.rotation ?? 0)
+
+      if (buildings.length > 0) {
+        const activeB = buildings.find(b => (b.floors || []).some(f => f.id === activeFloor.id))
+        if (activeB) {
+          const sortedFloors = [...(activeB.floors || [])].sort((a, b) => a.level - b.level)
+          const activeIdx = sortedFloors.findIndex(f => f.id === activeFloor.id)
+          if (activeIdx > 0) {
+            setRefFloorId(sortedFloors[activeIdx - 1].id)
+            setShowRefFloorPlan(true)
+            setShowRefNodes(true)
+          } else {
+            setRefFloorId('')
+            setShowRefFloorPlan(false)
+            setShowRefNodes(false)
+          }
+        }
+      }
+    }
+  }, [activeFloor, buildings])
+
+  const handleSaveCalibration = async () => {
+    if (!activeFloor) return
+    const prevMetadata = activeFloor.metadata || {}
+    const updatedMetadata = {
+      ...prevMetadata,
+      calibration: {
+        x_offset: calibrationX,
+        y_offset: calibrationY,
+        scale: calibrationScale,
+        rotation: calibrationRotation
+      }
+    }
+
+    try {
+      const updated = await updateFloor(activeFloor.id, { metadata: updatedMetadata })
+      setActiveFloor(updated)
+      
+      setBuildings(prev => prev.map(b => ({
+        ...b,
+        floors: (b.floors || []).map(f => f.id === updated.id ? updated : f)
+      })))
+      
+      alert('Floor plan alignment saved successfully!')
+    } catch (err) {
+      alert('Failed to save floor alignment: ' + err.message)
+    }
+  }
+
+  const handleResetCalibration = () => {
+    setCalibrationX(0)
+    setCalibrationY(0)
+    setCalibrationScale(1)
+    setCalibrationRotation(0)
   }
 
   // Auto-center the SVG canvas viewport on a specific node coordinates
@@ -941,8 +1017,161 @@ export default function Dashboard() {
                     <Route size={14} />
                     Test Route
                   </button>
+
+                  {activeFloor.floor_plan_url && (
+                    <button
+                      onClick={() => setShowCalibrationHUD(prev => !prev)}
+                      className={showCalibrationHUD ? 'active' : ''}
+                      style={{
+                        background: showCalibrationHUD ? 'var(--primary)' : 'rgba(255, 255, 255, 0.03)',
+                        borderColor: showCalibrationHUD ? 'var(--primary)' : 'var(--border)',
+                        padding: '6px 12px'
+                      }}
+                    >
+                      <Sliders size={14} />
+                      Align Map
+                    </button>
+                  )}
                 </div>
               </div>
+
+              {showCalibrationHUD && (
+                <div className="calibration-hud" onMouseDown={e => e.stopPropagation()}>
+                  <h4>
+                    <span>Floor Alignment Calibration</span>
+                    <button 
+                      onClick={() => setShowCalibrationHUD(false)} 
+                      style={{ padding: '2px', border: 'none', background: 'transparent' }}
+                    >
+                      <X size={14} />
+                    </button>
+                  </h4>
+                  
+                  <div className="calibration-row">
+                    <label>
+                      <span>X Translation:</span>
+                      <strong>{calibrationX}px</strong>
+                    </label>
+                    <input 
+                      type="range" 
+                      min="-300" 
+                      max="300" 
+                      step="1"
+                      value={calibrationX} 
+                      onChange={e => setCalibrationX(parseInt(e.target.value, 10))} 
+                    />
+                  </div>
+
+                  <div className="calibration-row">
+                    <label>
+                      <span>Y Translation:</span>
+                      <strong>{calibrationY}px</strong>
+                    </label>
+                    <input 
+                      type="range" 
+                      min="-300" 
+                      max="300" 
+                      step="1"
+                      value={calibrationY} 
+                      onChange={e => setCalibrationY(parseInt(e.target.value, 10))} 
+                    />
+                  </div>
+
+                  <div className="calibration-row">
+                    <label>
+                      <span>Scale Multiplier:</span>
+                      <strong>{calibrationScale.toFixed(2)}x</strong>
+                    </label>
+                    <input 
+                      type="range" 
+                      min="0.5" 
+                      max="2.5" 
+                      step="0.01"
+                      value={calibrationScale} 
+                      onChange={e => setCalibrationScale(parseFloat(e.target.value))} 
+                    />
+                  </div>
+
+                  <div className="calibration-row">
+                    <label>
+                      <span>Rotation Angle:</span>
+                      <strong>{calibrationRotation}°</strong>
+                    </label>
+                    <input 
+                      type="range" 
+                      min="-180" 
+                      max="180" 
+                      step="1"
+                      value={calibrationRotation} 
+                      onChange={e => setCalibrationRotation(parseInt(e.target.value, 10))} 
+                    />
+                  </div>
+
+                  <div className="calibration-toggles">
+                    <div className="calibration-row" style={{ marginBottom: '4px' }}>
+                      <label style={{ fontSize: '0.7rem' }}>Reference Floor for Overlay:</label>
+                      <select 
+                        value={refFloorId} 
+                        onChange={e => setRefFloorId(e.target.value)}
+                        style={{ padding: '4px 6px', fontSize: '0.75rem', width: '100%', marginTop: '2px' }}
+                      >
+                        <option value="">-- No Reference Floor --</option>
+                        {buildings
+                          .find(b => (b.floors || []).some(f => f.id === activeFloor.id))
+                          ?.floors.filter(f => f.id !== activeFloor.id)
+                          .map(f => (
+                            <option key={f.id} value={f.id}>{f.name} (Lvl {f.level})</option>
+                          ))
+                        }
+                      </select>
+                    </div>
+
+                    {refFloorId && (
+                      <>
+                        <div className="calibration-toggle-item">
+                          <span>Show Reference Plan Image</span>
+                          <input 
+                            type="checkbox" 
+                            checked={showRefFloorPlan} 
+                            onChange={e => setShowRefFloorPlan(e.target.checked)} 
+                          />
+                        </div>
+
+                        {showRefFloorPlan && (
+                          <div className="calibration-row">
+                            <label>
+                              <span>Ref Plan Opacity:</span>
+                              <strong>{Math.round(refOpacity * 100)}%</strong>
+                            </label>
+                            <input 
+                              type="range" 
+                              min="0.1" 
+                              max="0.9" 
+                              step="0.05"
+                              value={refOpacity} 
+                              onChange={e => setRefOpacity(parseFloat(e.target.value))} 
+                            />
+                          </div>
+                        )}
+
+                        <div className="calibration-toggle-item">
+                          <span>Show Reference Nodes Overlay</span>
+                          <input 
+                            type="checkbox" 
+                            checked={showRefNodes} 
+                            onChange={e => setShowRefNodes(e.target.checked)} 
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="calibration-actions">
+                    <button onClick={handleResetCalibration}>Reset</button>
+                    <button className="primary" onClick={handleSaveCalibration}>Save Alignment</button>
+                  </div>
+                </div>
+              )}
 
               <div 
                 className="canvas-wrap"
@@ -965,6 +1194,70 @@ export default function Dashboard() {
                   >
                     <g transform={`translate(${pan.x}, ${pan.y}) scale(${scale})`}>
                       
+                      {showRefFloorPlan && refFloorId && (() => {
+                        const refFloor = buildings
+                          .flatMap(b => b.floors || [])
+                          .find(f => f.id === refFloorId)
+                        if (!refFloor || !refFloor.floor_plan_url) return null
+                        const refCal = refFloor.metadata?.calibration || { x_offset: 0, y_offset: 0, scale: 1, rotation: 0 }
+                        return (
+                          <image 
+                            href={refFloor.floor_plan_url} 
+                            x="0" 
+                            y="0" 
+                            width="1000" 
+                            height="1000" 
+                            preserveAspectRatio="xMidYMid meet"
+                            opacity={refOpacity}
+                            transform={`translate(${refCal.x_offset ?? 0}, ${refCal.y_offset ?? 0}) scale(${refCal.scale ?? 1}) rotate(${refCal.rotation ?? 0}, 500, 500)`}
+                            style={{ transformOrigin: '500px 500px', pointerEvents: 'none' }}
+                          />
+                        )
+                      })()}
+
+                      {showRefNodes && refFloorId && allCampusNodes
+                        .filter(n => n.floor_id === refFloorId)
+                        .map(refNode => (
+                          <g 
+                            key={`ref-${refNode.id}`}
+                            transform={`translate(${refNode.x}, ${refNode.y})`}
+                            style={{ opacity: 0.5, pointerEvents: 'none' }}
+                          >
+                            <circle 
+                              r="8" 
+                              fill="none"
+                              stroke="#ec4899"
+                              strokeWidth="2"
+                              strokeDasharray="3, 3"
+                            />
+                            <circle 
+                              r="2"
+                              fill="#ec4899"
+                            />
+                            <text 
+                              x="12" 
+                              y="4" 
+                              fill="#ec4899"
+                              style={{ fontSize: '10px', fontWeight: 600, pointerEvents: 'none' }}
+                            >
+                              {refNode.label} (Ref)
+                            </text>
+                          </g>
+                        ))}
+
+                      {activeFloor.floor_plan_url && (
+                        <image 
+                          href={activeFloor.floor_plan_url} 
+                          x="0" 
+                          y="0" 
+                          width="1000" 
+                          height="1000" 
+                          preserveAspectRatio="xMidYMid meet"
+                          transform={`translate(${calibrationX}, ${calibrationY}) scale(${calibrationScale}) rotate(${calibrationRotation}, 500, 500)`}
+                          style={{ transformOrigin: '500px 500px' }}
+                        />
+                      )}
+
                       {edges.map(edge => {
                         const fromNode = nodes.find(n => n.id === edge.from_node_id)
                         const toNode = nodes.find(n => n.id === edge.to_node_id)
