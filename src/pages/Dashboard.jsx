@@ -15,7 +15,7 @@ import { dijkstra } from '../utils/dijkstra'
 import {
   School, Compass, Layers, Plus, Trash2, HelpCircle, ChevronDown, ChevronUp,
   UploadCloud, ZoomIn, ZoomOut, RotateCcw, ArrowUp, ArrowLeft, ArrowRight,
-  CheckCircle, Route, Link2, PlusCircle, MousePointer, X, Sliders, Search
+  ArrowUpDown, CheckCircle, Route, Link2, PlusCircle, MousePointer, X, Sliders, Search
 } from 'lucide-react'
 
 const NODE_TYPES = ['room', 'corridor', 'stair', 'lift', 'entrance', 'poi']
@@ -35,6 +35,8 @@ function getInstructionIcon(type) {
   switch (type) {
     case 'start':
       return <Compass size={16} style={{ color: '#10b981' }} />
+    case 'floor_change':
+      return <ArrowUpDown size={16} style={{ color: '#8b5cf6' }} />
     case 'left':
       return <ArrowLeft size={16} style={{ color: '#6366f1' }} />
     case 'right':
@@ -77,19 +79,6 @@ export default function Dashboard() {
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState('')
 
-  // Calibration states
-  const [showCalibrationHUD, setShowCalibrationHUD] = useState(false)
-  const [calibrationX, setCalibrationX] = useState(0)
-  const [calibrationY, setCalibrationY] = useState(0)
-  const [calibrationScale, setCalibrationScale] = useState(1)
-  const [calibrationRotation, setCalibrationRotation] = useState(0)
-
-  // Reference Overlay states
-  const [refFloorId, setRefFloorId] = useState('')
-  const [showRefFloorPlan, setShowRefFloorPlan] = useState(false)
-  const [showRefNodes, setShowRefNodes] = useState(false)
-  const [refOpacity, setRefOpacity] = useState(0.4)
-
   // Creation form states
   const [newCampusName, setNewCampusName] = useState('')
   const [newCampusDesc, setNewCampusDesc] = useState('')
@@ -105,6 +94,9 @@ export default function Dashboard() {
   const [connectFrom, setConnectFrom] = useState(null)
   const [pathFrom, setPathFrom] = useState(null)
   const [pathTo, setPathTo] = useState(null)
+  
+  // Cross-floor connection selection state
+  const [targetCrossFloorNodeId, setTargetCrossFloorNodeId] = useState('')
 
   // Zoom & Pan states
   const [scale, setScale] = useState(1)
@@ -115,6 +107,19 @@ export default function Dashboard() {
 
   // Progressive navigation step tracking state
   const [activeStepIndex, setActiveStepIndex] = useState(0)
+
+  // Calibration states
+  const [showCalibrationHUD, setShowCalibrationHUD] = useState(false)
+  const [calibrationX, setCalibrationX] = useState(0)
+  const [calibrationY, setCalibrationY] = useState(0)
+  const [calibrationScale, setCalibrationScale] = useState(1)
+  const [calibrationRotation, setCalibrationRotation] = useState(0)
+
+  // Reference Overlay states
+  const [refFloorId, setRefFloorId] = useState('')
+  const [showRefFloorPlan, setShowRefFloorPlan] = useState(false)
+  const [showRefNodes, setShowRefNodes] = useState(false)
+  const [refOpacity, setRefOpacity] = useState(0.4)
 
   // In-app Modal System states
   const [activeModal, setActiveModal] = useState(null)
@@ -389,6 +394,21 @@ export default function Dashboard() {
     }
   }
 
+  // Cross-floor connectivity creation
+  const handleCreateCrossFloorLink = async () => {
+    if (!connectFrom || !targetCrossFloorNodeId) return
+    try {
+      const edge = await createEdge(connectFrom.id, targetCrossFloorNodeId, 80) // 80 standard travel weight
+      setEdges(prev => [...prev, edge])
+      setAllCampusEdges(prev => [...prev, edge])
+      setTargetCrossFloorNodeId('')
+      setConnectFrom(null)
+      alert('Cross-floor route connection established!')
+    } catch (err) {
+      alert('Failed to build link: ' + err.message)
+    }
+  }
+
   // Custom modal deletes & weight adjustments
   const triggerDeleteNodeModal = (node, e) => {
     e.preventDefault()
@@ -519,7 +539,6 @@ export default function Dashboard() {
     setScanProgress('Loading blueprint details...')
 
     try {
-      // Clear existing nodes and edges on this floor first to avoid duplicates
       setScanProgress('Clearing existing layout database entries...')
       const existingNodes = await listNodes(activeFloor.id)
       for (const n of existingNodes) {
@@ -528,7 +547,6 @@ export default function Dashboard() {
       setNodes([])
       setEdges([])
 
-      // 1. Fetch natural dimensions to map ratios correctly
       const img = new Image()
       img.src = activeFloor.floor_plan_url
       await new Promise((resolve, reject) => {
@@ -541,7 +559,6 @@ export default function Dashboard() {
 
       setScanProgress('Initializing OCR engine worker...')
 
-      // 2. Perform OCR recognition
       const result = await window.Tesseract.recognize(
         activeFloor.floor_plan_url,
         'eng',
@@ -556,43 +573,35 @@ export default function Dashboard() {
         }
       )
 
-      // 3. Spatially group close/stacked words and clean up size-dimension noise
       const words = result.data.words || []
       
-      // Filter out low confidence noise & size-dimension characters
       const cleanWords = words.filter(w => {
         const txt = w.text.trim()
         if (w.confidence < 45 || txt.length === 0) return false
         
-        // Strip out non-alphanumeric border symbols for cleaner filtering check
         const cleanedText = txt.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '')
         const lower = cleanedText.toLowerCase()
 
         if (lower.length === 0) return false
         if (lower.length === 1 && !lower.match(/[a-z0-9]/i)) return false
 
-        // Filter out legend and scale headers at the very top of the blueprint canvas (y < 13% of height)
         const wordY = (w.bbox.y0 + w.bbox.y1) / 2
         const relY = wordY / origHeight
         if (relY < 0.13) return false
 
-        // Check if word looks like a dimension measurement
         if (lower.match(/^\d+\.\d+(m|cm)?$/)) return false;
         if (lower.match(/^\d+(\.\d+)?(m|cm)?x\d+(\.\d+)?(m|cm)?$/)) return false;
         if (lower.match(/^\d+(m|cm)$/)) return false;
         if (lower.match(/^x\d+(\.\d+)?(m|cm)?$/)) return false;
 
-        // Filter out scale terms and layout labels
         const scaleWords = ['scale', 'legend', 'drawing', 'plan', 'blueprint', 'structure', '1cm', '2m', '4m', '6m', '8m', '10m', '1cm=2m', '1cm='];
         if (scaleWords.some(term => lower.includes(term))) return false;
 
-        // Filter out pure punctuation junk lines/walls
         if (lower.match(/^[_\-=+*|\\/()\[\]{}&^%$#@!~`?.;:]+$/)) return false;
 
         return true
       })
 
-      // Group words into label clusters using horizontal and vertical proximity
       const shouldGroup = (w1, w2) => {
         const h1 = w1.bbox.y1 - w1.bbox.y0
         const h2 = w2.bbox.y1 - w2.bbox.y0
@@ -604,7 +613,6 @@ export default function Dashboard() {
         const xOverlap = Math.max(0, Math.min(w1.bbox.x1, w2.bbox.x1) - Math.max(w1.bbox.x0, w2.bbox.x0))
         const yOverlap = Math.max(0, Math.min(w1.bbox.y1, w2.bbox.y1) - Math.max(w1.bbox.y0, w2.bbox.y0))
 
-        // Horizontally adjacent on same line
         if (yOverlap > avgHeight * 0.3) {
           const hGap = Math.min(
             Math.abs(w1.bbox.x0 - w2.bbox.x1),
@@ -613,7 +621,6 @@ export default function Dashboard() {
           if (hGap < avgHeight * 1.5) return true
         }
 
-        // Vertically stacked room elements
         if (xOverlap > Math.min(w1Width, w2Width) * 0.15) {
           const vGap = Math.min(
             Math.abs(w1.bbox.y0 - w2.bbox.y1),
@@ -625,7 +632,6 @@ export default function Dashboard() {
         return false
       }
 
-      // Single-linkage clustering parent mappings
       const parent = Array.from({ length: cleanWords.length }, (_, i) => i)
       const find = (i) => {
         while (parent[i] !== i) {
@@ -642,7 +648,6 @@ export default function Dashboard() {
         }
       }
 
-      // Merge adjacent nodes
       for (let i = 0; i < cleanWords.length; i++) {
         for (let j = i + 1; j < cleanWords.length; j++) {
           if (shouldGroup(cleanWords[i], cleanWords[j])) {
@@ -651,7 +656,6 @@ export default function Dashboard() {
         }
       }
 
-      // Group words list by roots
       const clusters = new Map()
       for (let i = 0; i < cleanWords.length; i++) {
         const root = find(i)
@@ -662,6 +666,7 @@ export default function Dashboard() {
       }
 
       const roomNodes = []
+      const connectionNodes = []
 
       for (const [_, clusterWords] of clusters) {
         clusterWords.sort((a, b) => {
@@ -679,7 +684,6 @@ export default function Dashboard() {
           })
           .filter(Boolean)
 
-        // Remove consecutive duplicate words
         const uniqueWords = []
         for (const w of cleanedWordsList) {
           if (uniqueWords.length === 0 || uniqueWords[uniqueWords.length - 1].toLowerCase() !== w.toLowerCase()) {
@@ -711,7 +715,6 @@ export default function Dashboard() {
 
         const cleanLabel = toTitleCase(rawText)
 
-        // Enclosing bounding box
         const bbox = {
           x0: Math.min(...clusterWords.map(w => w.bbox.x0)),
           y0: Math.min(...clusterWords.map(w => w.bbox.y0)),
@@ -722,11 +725,9 @@ export default function Dashboard() {
         const x_img = (bbox.x0 + bbox.x1) / 2
         const y_img = (bbox.y0 + bbox.y1) / 2
 
-        // Map to 1000px viewport
         const x = Math.round((x_img / origWidth) * 1000)
         const y = Math.round((y_img / origHeight) * 1000)
 
-        // Classify node types
         const lower = cleanLabel.toLowerCase()
         let type = 'room'
         if (lower.includes('stair') || lower.includes('step') || lower.includes('escalator')) {
@@ -741,24 +742,114 @@ export default function Dashboard() {
           type = 'poi'
         }
 
-        // Write new node pin
         const node = await createNode(activeFloor.id, { type, label: cleanLabel, x, y })
-        roomNodes.push(node)
+        if (type === 'room' || type === 'poi') {
+          roomNodes.push(node)
+        } else {
+          connectionNodes.push(node)
+        }
       }
 
-      setNodes(roomNodes)
-      setEdges([])
+      if (roomNodes.length === 0 && connectionNodes.length === 0) {
+        alert('OCR finished scanning, but could not detect any room text with high confidence.')
+      } else {
+        setScanProgress('Building walkable hallway connection graph...')
+        
+        const autoEdges = []
+        const corridorNodes = []
 
-      setAllCampusNodes(prev => {
-        const filtered = prev.filter(n => n.floor_id !== activeFloor.id)
-        return [...filtered, ...roomNodes]
-      })
-      setAllCampusEdges(prev => {
-        const nodeIds = new Set(roomNodes.map(n => n.id))
-        return prev.filter(e => !nodeIds.has(e.from_node_id) && !nodeIds.has(e.to_node_id))
-      })
+        const TOP_CORRIDOR_Y = 480
+        const BTM_CORRIDOR_Y = 620
 
-      alert(`OCR Scan complete! Generated ${roomNodes.length} rooms from image scanner. Please manually link node paths.`)
+        for (const room of roomNodes) {
+          const targetY = room.y < 520 ? TOP_CORRIDOR_Y : BTM_CORRIDOR_Y
+          
+          let corrNode = corridorNodes.find(c => c.y === targetY && Math.abs(c.x - room.x) < 40)
+          
+          if (!corrNode) {
+            corrNode = await createNode(activeFloor.id, {
+              type: 'corridor',
+              label: `Hallway Near ${room.label}`,
+              x: room.x,
+              y: targetY
+            })
+            corridorNodes.push(corrNode)
+          }
+
+          const dist = Math.max(1, Math.round(Math.abs(room.y - targetY) * 0.08))
+          const edge = await createEdge(room.id, corrNode.id, dist)
+          autoEdges.push(edge)
+        }
+
+        const topHalls = corridorNodes.filter(c => c.y === TOP_CORRIDOR_Y).sort((a, b) => a.x - b.x)
+        const btmHalls = corridorNodes.filter(c => c.y === BTM_CORRIDOR_Y).sort((a, b) => a.x - b.x)
+
+        for (let i = 0; i < topHalls.length - 1; i++) {
+          const n1 = topHalls[i]
+          const n2 = topHalls[i+1]
+          const dist = Math.max(1, Math.round((n2.x - n1.x) * 0.08))
+          const edge = await createEdge(n1.id, n2.id, dist)
+          autoEdges.push(edge)
+        }
+
+        for (let i = 0; i < btmHalls.length - 1; i++) {
+          const n1 = btmHalls[i]
+          const n2 = btmHalls[i+1]
+          const dist = Math.max(1, Math.round((n2.x - n1.x) * 0.08))
+          const edge = await createEdge(n1.id, n2.id, dist)
+          autoEdges.push(edge)
+        }
+
+        if (topHalls.length > 0 && btmHalls.length > 0) {
+          const leftTop = topHalls[0]
+          const leftBtm = btmHalls[0]
+          const leftDist = Math.max(1, Math.round(Math.abs(leftBtm.y - leftTop.y) * 0.08))
+          const leftEdge = await createEdge(leftTop.id, leftBtm.id, leftDist)
+          autoEdges.push(leftEdge)
+
+          const rightTop = topHalls[topHalls.length - 1]
+          const rightBtm = btmHalls[btmHalls.length - 1]
+          const rightDist = Math.max(1, Math.round(Math.abs(rightBtm.y - rightTop.y) * 0.08))
+          const rightEdge = await createEdge(rightTop.id, rightBtm.id, rightDist)
+          autoEdges.push(rightEdge)
+        }
+
+        const allHalls = [...topHalls, ...btmHalls]
+        if (allHalls.length > 0) {
+          for (const conn of connectionNodes) {
+            let nearestHall = null
+            let minDist = Infinity
+            for (const hall of allHalls) {
+              const d = Math.hypot(hall.x - conn.x, hall.y - conn.y)
+              if (d < minDist) {
+                minDist = d
+                nearestHall = hall
+              }
+            }
+            if (nearestHall) {
+              const distMeters = Math.max(1, Math.round(minDist * 0.08))
+              const edge = await createEdge(conn.id, nearestHall.id, distMeters)
+              autoEdges.push(edge)
+            }
+          }
+        }
+
+        const finalNodesList = [...roomNodes, ...connectionNodes, ...corridorNodes]
+        setNodes(finalNodesList)
+        setEdges(autoEdges)
+
+        setAllCampusNodes(prev => {
+          const filtered = prev.filter(n => n.floor_id !== activeFloor.id)
+          return [...filtered, ...finalNodesList]
+        })
+        setAllCampusEdges(prev => {
+          const nodeIds = new Set(finalNodesList.map(n => n.id))
+          const filtered = prev.filter(e => !nodeIds.has(e.from_node_id) && !nodeIds.has(e.to_node_id))
+          return [...filtered, ...autoEdges]
+        })
+
+        alert(`OCR Scan complete! Generated ${roomNodes.length} rooms, ${connectionNodes.length} connections, ${corridorNodes.length} hallway intersection nodes, and automatically linked ${autoEdges.length} routing edges. The graph is fully connected and walkable!`)
+      }
     } catch (err) {
       alert('Scanning failed: ' + err.message)
     } finally {
@@ -912,6 +1003,20 @@ export default function Dashboard() {
 
     return steps
   }
+
+  const crossFloorOptions = connectFrom && (connectFrom.type === 'stair' || connectFrom.type === 'lift')
+    ? allCampusNodes
+        .filter(n => n.id !== connectFrom.id && n.floor_id !== activeFloor?.id && (n.type === 'stair' || n.type === 'lift'))
+        .map(n => {
+          const dist = Math.hypot(n.x - connectFrom.x, n.y - connectFrom.y)
+          return { ...n, distanceToSource: dist, isAligned: dist <= 30 }
+        })
+        .sort((a, b) => {
+          if (a.isAligned && !b.isAligned) return -1
+          if (!a.isAligned && b.isAligned) return 1
+          return a.distanceToSource - b.distanceToSource
+        })
+    : []
 
   const activeStepNodeId = routeInstructions[activeStepIndex]?.nodeId
 
@@ -1504,6 +1609,56 @@ export default function Dashboard() {
                   </div>
                 )}
 
+                {tool === 'connect' && connectFrom && (connectFrom.type === 'stair' || connectFrom.type === 'lift') && (
+                  <div className="cross-floor-hud" onMouseDown={e => e.stopPropagation()}>
+                    <h4>Cross-Floor Connection</h4>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                      Connect stair/lift <strong>{connectFrom.label}</strong> to another floor's hub:
+                    </p>
+                    {crossFloorOptions.length === 0 ? (
+                      <p className="muted" style={{ fontSize: '0.75rem', fontStyle: 'italic' }}>
+                        No stairs/lifts created on other floors yet.
+                      </p>
+                    ) : (
+                      <>
+                        <select 
+                          value={targetCrossFloorNodeId}
+                          onChange={e => setTargetCrossFloorNodeId(e.target.value)}
+                        >
+                          <option value="">-- Choose Link Target --</option>
+                          {crossFloorOptions.map(n => {
+                            const nodeFloor = buildings
+                              .flatMap(b => b.floors || [])
+                              .find(f => f.id === n.floor_id)
+                            const recommendation = n.isAligned 
+                              ? `🌟 (Aligned - recommended)` 
+                              : `(${Math.round(n.distanceToSource)}px offset)`
+                            return (
+                              <option key={n.id} value={n.id}>
+                                {nodeFloor?.name || 'Floor'} &rarr; {n.label} {recommendation}
+                              </option>
+                            )
+                          })}
+                        </select>
+                        <button 
+                          className="primary" 
+                          onClick={handleCreateCrossFloorLink}
+                          disabled={!targetCrossFloorNodeId}
+                          style={{ padding: '6px 10px', fontSize: '0.75rem', justifyContent: 'center' }}
+                        >
+                          Establish Link
+                        </button>
+                      </>
+                    )}
+                    <button 
+                      onClick={() => setConnectFrom(null)}
+                      style={{ padding: '6px 10px', fontSize: '0.75rem', justifyContent: 'center' }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+
                 {loadingMap ? (
                   <div className="center" style={{ background: 'transparent', height: '100%' }}>
                     <div className="loading-spinner"></div>
@@ -1701,7 +1856,7 @@ export default function Dashboard() {
                 <HelpCircle size={14} style={{ color: 'var(--primary)' }} />
                 {tool === 'select' && 'Select tool: Drag nodes to position them. Right-click node to delete. Click edge to delete/edit distance.'}
                 {tool === 'add' && `Add node tool: Click the layout grid to create a "${nodeType.toUpperCase()}" node.`}
-                {tool === 'connect' && 'Connect tool: Link two nodes.'}
+                {tool === 'connect' && 'Connect tool: Link two nodes. Select stairs/lifts to create cross-floor routing bridges.'}
                 {tool === 'path' && 'Test Route tool: Choose starting and arrival nodes to run Dijkstra and resolve turn directions.'}
               </p>
             </div>
