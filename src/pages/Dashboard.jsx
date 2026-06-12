@@ -15,7 +15,7 @@ import { dijkstra } from '../utils/dijkstra'
 import {
   School, Compass, Layers, Plus, Trash2, HelpCircle, ChevronDown, ChevronUp,
   UploadCloud, ZoomIn, ZoomOut, RotateCcw, ArrowUp, ArrowLeft, ArrowRight,
-  CheckCircle, Route, Link2, PlusCircle, MousePointer, X, Sliders
+  CheckCircle, Route, Link2, PlusCircle, MousePointer, X, Sliders, Search
 } from 'lucide-react'
 
 const NODE_TYPES = ['room', 'corridor', 'stair', 'lift', 'entrance', 'poi']
@@ -72,6 +72,10 @@ export default function Dashboard() {
   const [loadingCampuses, setLoadingCampuses] = useState(true)
   const [loadingMap, setLoadingMap] = useState(false)
   const [uploading, setUploading] = useState(false)
+
+  // AI OCR Map Scanner state
+  const [scanning, setScanning] = useState(false)
+  const [scanProgress, setScanProgress] = useState('')
 
   // Calibration states
   const [showCalibrationHUD, setShowCalibrationHUD] = useState(false)
@@ -500,6 +504,266 @@ export default function Dashboard() {
       alert('Failed to upload plan: ' + err.message)
     } finally {
       setUploading(false)
+    }
+  }
+
+  // AI OCR Map blueprints auto-scanner algorithm!
+  const handleAutoDetectRooms = async () => {
+    if (!activeFloor?.floor_plan_url) return
+    if (!window.Tesseract) {
+      alert('AI OCR scanning library is still initializing. Please wait a moment.')
+      return
+    }
+
+    setScanning(true)
+    setScanProgress('Loading blueprint details...')
+
+    try {
+      // Clear existing nodes and edges on this floor first to avoid duplicates
+      setScanProgress('Clearing existing layout database entries...')
+      const existingNodes = await listNodes(activeFloor.id)
+      for (const n of existingNodes) {
+        await deleteNode(n.id)
+      }
+      setNodes([])
+      setEdges([])
+
+      // 1. Fetch natural dimensions to map ratios correctly
+      const img = new Image()
+      img.src = activeFloor.floor_plan_url
+      await new Promise((resolve, reject) => {
+        img.onload = () => resolve()
+        img.onerror = () => reject(new Error('Blueprint failed to load for scanning.'))
+      })
+      
+      const origWidth = img.naturalWidth || 1000
+      const origHeight = img.naturalHeight || 1000
+
+      setScanProgress('Initializing OCR engine worker...')
+
+      // 2. Perform OCR recognition
+      const result = await window.Tesseract.recognize(
+        activeFloor.floor_plan_url,
+        'eng',
+        {
+          logger: (m) => {
+            if (m.status === 'recognizing') {
+              setScanProgress(`Analyzing text elements... ${Math.round(m.progress * 100)}%`)
+            } else {
+              setScanProgress(`Worker: ${m.status}`)
+            }
+          }
+        }
+      )
+
+      // 3. Spatially group close/stacked words and clean up size-dimension noise
+      const words = result.data.words || []
+      
+      // Filter out low confidence noise & size-dimension characters
+      const cleanWords = words.filter(w => {
+        const txt = w.text.trim()
+        if (w.confidence < 45 || txt.length === 0) return false
+        
+        // Strip out non-alphanumeric border symbols for cleaner filtering check
+        const cleanedText = txt.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '')
+        const lower = cleanedText.toLowerCase()
+
+        if (lower.length === 0) return false
+        if (lower.length === 1 && !lower.match(/[a-z0-9]/i)) return false
+
+        // Filter out legend and scale headers at the very top of the blueprint canvas (y < 13% of height)
+        const wordY = (w.bbox.y0 + w.bbox.y1) / 2
+        const relY = wordY / origHeight
+        if (relY < 0.13) return false
+
+        // Check if word looks like a dimension measurement
+        if (lower.match(/^\d+\.\d+(m|cm)?$/)) return false;
+        if (lower.match(/^\d+(\.\d+)?(m|cm)?x\d+(\.\d+)?(m|cm)?$/)) return false;
+        if (lower.match(/^\d+(m|cm)$/)) return false;
+        if (lower.match(/^x\d+(\.\d+)?(m|cm)?$/)) return false;
+
+        // Filter out scale terms and layout labels
+        const scaleWords = ['scale', 'legend', 'drawing', 'plan', 'blueprint', 'structure', '1cm', '2m', '4m', '6m', '8m', '10m', '1cm=2m', '1cm='];
+        if (scaleWords.some(term => lower.includes(term))) return false;
+
+        // Filter out pure punctuation junk lines/walls
+        if (lower.match(/^[_\-=+*|\\/()\[\]{}&^%$#@!~`?.;:]+$/)) return false;
+
+        return true
+      })
+
+      // Group words into label clusters using horizontal and vertical proximity
+      const shouldGroup = (w1, w2) => {
+        const h1 = w1.bbox.y1 - w1.bbox.y0
+        const h2 = w2.bbox.y1 - w2.bbox.y0
+        const avgHeight = (h1 + h2) / 2
+        
+        const w1Width = w1.bbox.x1 - w1.bbox.x0
+        const w2Width = w2.bbox.x1 - w2.bbox.x0
+
+        const xOverlap = Math.max(0, Math.min(w1.bbox.x1, w2.bbox.x1) - Math.max(w1.bbox.x0, w2.bbox.x0))
+        const yOverlap = Math.max(0, Math.min(w1.bbox.y1, w2.bbox.y1) - Math.max(w1.bbox.y0, w2.bbox.y0))
+
+        // Horizontally adjacent on same line
+        if (yOverlap > avgHeight * 0.3) {
+          const hGap = Math.min(
+            Math.abs(w1.bbox.x0 - w2.bbox.x1),
+            Math.abs(w2.bbox.x0 - w1.bbox.x1)
+          )
+          if (hGap < avgHeight * 1.5) return true
+        }
+
+        // Vertically stacked room elements
+        if (xOverlap > Math.min(w1Width, w2Width) * 0.15) {
+          const vGap = Math.min(
+            Math.abs(w1.bbox.y0 - w2.bbox.y1),
+            Math.abs(w2.bbox.y0 - w1.bbox.y1)
+          )
+          if (vGap < avgHeight * 1.5) return true
+        }
+
+        return false
+      }
+
+      // Single-linkage clustering parent mappings
+      const parent = Array.from({ length: cleanWords.length }, (_, i) => i)
+      const find = (i) => {
+        while (parent[i] !== i) {
+          parent[i] = parent[parent[i]]
+          i = parent[i]
+        }
+        return i
+      }
+      const union = (i, j) => {
+        const rootI = find(i)
+        const rootJ = find(j)
+        if (rootI !== rootJ) {
+          parent[rootI] = rootJ
+        }
+      }
+
+      // Merge adjacent nodes
+      for (let i = 0; i < cleanWords.length; i++) {
+        for (let j = i + 1; j < cleanWords.length; j++) {
+          if (shouldGroup(cleanWords[i], cleanWords[j])) {
+            union(i, j)
+          }
+        }
+      }
+
+      // Group words list by roots
+      const clusters = new Map()
+      for (let i = 0; i < cleanWords.length; i++) {
+        const root = find(i)
+        if (!clusters.has(root)) {
+          clusters.set(root, [])
+        }
+        clusters.get(root).push(cleanWords[i])
+      }
+
+      const roomNodes = []
+
+      for (const [_, clusterWords] of clusters) {
+        clusterWords.sort((a, b) => {
+          const yDiff = Math.abs(a.bbox.y0 - b.bbox.y0)
+          const avgHeight = ((a.bbox.y1 - a.bbox.y0) + (b.bbox.y1 - b.bbox.y0)) / 2
+          if (yDiff < avgHeight * 0.4) {
+            return a.bbox.x0 - b.bbox.x0
+          }
+          return a.bbox.y0 - b.bbox.y0
+        })
+
+        const cleanedWordsList = clusterWords
+          .map(w => {
+            return w.text.trim().replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '')
+          })
+          .filter(Boolean)
+
+        // Remove consecutive duplicate words
+        const uniqueWords = []
+        for (const w of cleanedWordsList) {
+          if (uniqueWords.length === 0 || uniqueWords[uniqueWords.length - 1].toLowerCase() !== w.toLowerCase()) {
+            uniqueWords.push(w)
+          }
+        }
+
+        if (uniqueWords.length === 0) continue
+
+        const rawText = uniqueWords.join(' ')
+        if (rawText.length < 2) continue
+
+        const toTitleCase = (str) => {
+          return str
+            .toLowerCase()
+            .split(/\s+/)
+            .map(word => {
+              if (!word) return ''
+              if (word.match(/^\d+[a-z]?$/i) || word.length === 1) {
+                return word.toUpperCase()
+              }
+              if (['wc', 'poi', 'ee'].includes(word)) {
+                return word.toUpperCase()
+              }
+              return word.charAt(0).toUpperCase() + word.slice(1)
+            })
+            .join(' ')
+        }
+
+        const cleanLabel = toTitleCase(rawText)
+
+        // Enclosing bounding box
+        const bbox = {
+          x0: Math.min(...clusterWords.map(w => w.bbox.x0)),
+          y0: Math.min(...clusterWords.map(w => w.bbox.y0)),
+          x1: Math.max(...clusterWords.map(w => w.bbox.x1)),
+          y1: Math.max(...clusterWords.map(w => w.bbox.y1))
+        }
+
+        const x_img = (bbox.x0 + bbox.x1) / 2
+        const y_img = (bbox.y0 + bbox.y1) / 2
+
+        // Map to 1000px viewport
+        const x = Math.round((x_img / origWidth) * 1000)
+        const y = Math.round((y_img / origHeight) * 1000)
+
+        // Classify node types
+        const lower = cleanLabel.toLowerCase()
+        let type = 'room'
+        if (lower.includes('stair') || lower.includes('step') || lower.includes('escalator')) {
+          type = 'stair'
+        } else if (lower.includes('lift') || lower.includes('elevator')) {
+          type = 'lift'
+        } else if (lower.includes('entrance') || lower.includes('lobby') || lower.includes('exit') || lower.includes('reception') || lower.includes('gate') || lower.includes('entry')) {
+          type = 'entrance'
+        } else if (lower.includes('corridor') || lower.includes('hall') || lower.includes('walkway') || lower.includes('passage') || lower.includes('circulation')) {
+          type = 'corridor'
+        } else if (lower.includes('toilet') || lower.includes('washroom') || lower.includes('wc') || lower.includes('restroom') || lower.includes('pantry') || lower.includes('kitchen') || lower.includes('lounge') || lower.includes('janitor')) {
+          type = 'poi'
+        }
+
+        // Write new node pin
+        const node = await createNode(activeFloor.id, { type, label: cleanLabel, x, y })
+        roomNodes.push(node)
+      }
+
+      setNodes(roomNodes)
+      setEdges([])
+
+      setAllCampusNodes(prev => {
+        const filtered = prev.filter(n => n.floor_id !== activeFloor.id)
+        return [...filtered, ...roomNodes]
+      })
+      setAllCampusEdges(prev => {
+        const nodeIds = new Set(roomNodes.map(n => n.id))
+        return prev.filter(e => !nodeIds.has(e.from_node_id) && !nodeIds.has(e.to_node_id))
+      })
+
+      alert(`OCR Scan complete! Generated ${roomNodes.length} rooms from image scanner. Please manually link node paths.`)
+    } catch (err) {
+      alert('Scanning failed: ' + err.message)
+    } finally {
+      setScanning(false)
+      setScanProgress('')
     }
   }
 
@@ -1003,6 +1267,23 @@ export default function Dashboard() {
                 </div>
 
                 <div className="toolbar">
+                  {activeFloor.floor_plan_url && (
+                    <button 
+                      onClick={handleAutoDetectRooms} 
+                      disabled={scanning}
+                      style={{ 
+                        background: 'var(--success-glow)', 
+                        borderColor: 'rgba(16, 185, 129, 0.25)', 
+                        color: 'var(--success)',
+                        fontWeight: 600
+                      }}
+                      title="Automatically scans blueprint layout and registers room pins using OCR"
+                    >
+                      <Search size={14} />
+                      {scanning ? 'Scanning...' : 'Auto-Detect Rooms'}
+                    </button>
+                  )}
+
                   <button 
                     className={tool === 'select' ? 'active' : ''} 
                     onClick={() => { setTool('select'); setConnectFrom(null); }}
@@ -1212,6 +1493,17 @@ export default function Dashboard() {
                 onMouseLeave={handleMouseLeave}
               >
                 
+                {scanning && (
+                  <div className="ocr-scan-overlay">
+                    <div className="scan-line"></div>
+                    <div className="loading-spinner" style={{ width: '40px', height: '40px', borderWidth: '4px' }}></div>
+                    <div style={{ textAlign: 'center', marginTop: '12px' }}>
+                      <h4 style={{ fontSize: '1.1rem', marginBottom: '4px' }}>AI Blueprint OCR Engine</h4>
+                      <p className="muted" style={{ fontSize: '0.875rem' }}>{scanProgress}</p>
+                    </div>
+                  </div>
+                )}
+
                 {loadingMap ? (
                   <div className="center" style={{ background: 'transparent', height: '100%' }}>
                     <div className="loading-spinner"></div>
