@@ -5,6 +5,28 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 
 function ProtectedRoute({ children }) {
+  const { user, loading } = useAuth()
+
+  if (loading) {
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        height: '100vh', 
+        backgroundColor: '#111111', 
+        color: '#f6f6f6',
+        fontFamily: 'sans-serif'
+      }}>
+        Loading session...
+      </div>
+    )
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />
+  }
+
   return children
 }
 

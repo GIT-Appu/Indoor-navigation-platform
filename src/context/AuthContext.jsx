@@ -29,21 +29,29 @@ export function AuthProvider({ children }) {
 
     supabase.auth.getSession().then(({ data }) => {
       if (!data.session) {
-        // Automatically default to mock session for easier debugging
-        setSession({
-          user: { email: 'dev-admin@campusnavigator.local', id: 'dev-user-uuid' },
-          access_token: 'mock-token'
-        })
+        if (isMockMode) {
+          // Automatically default to mock session for easier debugging
+          setSession({
+            user: { email: 'dev-admin@campusnavigator.local', id: 'dev-user-uuid' },
+            access_token: 'mock-token'
+          })
+        } else {
+          setSession(null)
+        }
       } else {
         setSession(data.session)
       }
       setLoading(false)
     }).catch(err => {
       console.warn('Failed to connect to Supabase, falling back to offline mode:', err)
-      setSession({
-        user: { email: 'dev-admin@campusnavigator.local', id: 'dev-user-uuid' },
-        access_token: 'mock-token'
-      })
+      if (isMockMode) {
+        setSession({
+          user: { email: 'dev-admin@campusnavigator.local', id: 'dev-user-uuid' },
+          access_token: 'mock-token'
+        })
+      } else {
+        setSession(null)
+      }
       setLoading(false)
     })
 

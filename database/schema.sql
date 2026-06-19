@@ -76,21 +76,21 @@ create index if not exists idx_edges_to_node_id on edges(to_node_id);
 
 -- Helper: the current user's organization id
 create or replace function current_org_id()
-returns uuid language sql stable as $$
-  select org_id from profiles where id = auth.uid()
+returns uuid language sql security definer stable set search_path = public as $$
+  select org_id from public.profiles where id = auth.uid()
 $$;
 
 -- Auto-create an organization + profile when a user signs up
 create or replace function handle_new_user()
-returns trigger language plpgsql security definer as $$
+returns trigger language plpgsql security definer set search_path = public as $$
 declare
   new_org uuid;
 begin
-  insert into organizations (name)
+  insert into public.organizations (name)
   values (coalesce(new.email, 'New organization'))
   returning id into new_org;
 
-  insert into profiles (id, org_id, email)
+  insert into public.profiles (id, org_id, email)
   values (new.id, new_org, new.email);
 
   return new;
@@ -102,12 +102,41 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function handle_new_user();
 
--- Auto-stamp org_id on new campuses
+-- Auto-stamp org_id on new campuses (and auto-provision profile/org if missing)
 create or replace function set_campus_org()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  user_org uuid;
 begin
+  -- Get the organization ID for the current user
+  select org_id into user_org from public.profiles where id = auth.uid();
+  
+  -- If the profile or organization does not exist, create it on the fly!
+  if user_org is null then
+    -- Check if a profile exists at all
+    if not exists (select 1 from public.profiles where id = auth.uid()) then
+      -- Create organization
+      insert into public.organizations (name)
+      values (coalesce(auth.jwt() ->> 'email', 'New organization'))
+      returning id into user_org;
+      
+      -- Create profile
+      insert into public.profiles (id, org_id, email)
+      values (auth.uid(), user_org, auth.jwt() ->> 'email');
+    else
+      -- Profile exists but org_id is null, create organization and link it
+      insert into public.organizations (name)
+      values (coalesce(auth.jwt() ->> 'email', 'New organization'))
+      returning id into user_org;
+      
+      update public.profiles
+      set org_id = user_org
+      where id = auth.uid();
+    end if;
+  end if;
+
   if new.org_id is null then
-    new.org_id := current_org_id();
+    new.org_id := user_org;
   end if;
   return new;
 end;
@@ -134,15 +163,26 @@ create policy "own profile" on profiles
 create policy "own org" on organizations
   for all using (id = current_org_id()) with check (id = current_org_id());
 
-create policy "org campuses" on campuses
+-- Campuses
+create policy "public select campuses" on campuses
+  for select using (true);
+create policy "org write campuses" on campuses
   for all using (org_id = current_org_id()) with check (org_id = current_org_id());
 
-create policy "org buildings" on buildings
-  for all using (campus_id in (select id from campuses where org_id = current_org_id()))
+-- Buildings
+create policy "public select buildings" on buildings
+  for select using (true);
+create policy "org write buildings" on buildings
+  for all
+  using (campus_id in (select id from campuses where org_id = current_org_id()))
   with check (campus_id in (select id from campuses where org_id = current_org_id()));
 
-create policy "org floors" on floors
-  for all using (building_id in (
+-- Floors
+create policy "public select floors" on floors
+  for select using (true);
+create policy "org write floors" on floors
+  for all
+  using (building_id in (
     select b.id from buildings b
     join campuses c on b.campus_id = c.id
     where c.org_id = current_org_id()
@@ -153,8 +193,12 @@ create policy "org floors" on floors
     where c.org_id = current_org_id()
   ));
 
-create policy "org nodes" on nodes
-  for all using (floor_id in (
+-- Nodes
+create policy "public select nodes" on nodes
+  for select using (true);
+create policy "org write nodes" on nodes
+  for all
+  using (floor_id in (
     select f.id from floors f
     join buildings b on f.building_id = b.id
     join campuses c on b.campus_id = c.id
@@ -167,8 +211,12 @@ create policy "org nodes" on nodes
     where c.org_id = current_org_id()
   ));
 
-create policy "org edges" on edges
-  for all using (from_node_id in (
+-- Edges
+create policy "public select edges" on edges
+  for select using (true);
+create policy "org write edges" on edges
+  for all
+  using (from_node_id in (
     select n.id from nodes n
     join floors f on n.floor_id = f.id
     join buildings b on f.building_id = b.id
