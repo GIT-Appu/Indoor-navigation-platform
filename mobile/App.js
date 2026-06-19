@@ -211,6 +211,7 @@ function NavigationScreen({ campusId, campusName, onBack }) {
   const [endNode, setEndNode] = useState(null);
   const [solvedPath, setSolvedPath] = useState([]);
   const [activeStepNodeId, setActiveStepNodeId] = useState(null);
+  const [completedStepIndex, setCompletedStepIndex] = useState(-1);
 
   const [loadingData, setLoadingData] = useState(true);
 
@@ -220,28 +221,76 @@ function NavigationScreen({ campusId, campusName, onBack }) {
   const [startPickerVisible, setStartPickerVisible] = useState(false);
   const [endPickerVisible, setEndPickerVisible] = useState(false);
 
-  // Zoom & Pan states
+  // Zoom & Pan states — pan is the SVG coordinate at viewport center
   const [scale, setScale] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const panRef = useRef({ x: 0, y: 0 });
-  const panStart = useRef({ x: 0, y: 0 });
+  const [pan, setPan] = useState({ x: 500, y: 500 });
+  const panRef = useRef({ x: 500, y: 500 });
+  const scaleRef = useRef(1);
+  const panStart = useRef({ x: 500, y: 500 });
 
-  // Update panRef to always have access to latest state in gesture handlers
+  // Keep refs in sync so PanResponder closures always have current values
   useEffect(() => {
     panRef.current = pan;
   }, [pan]);
 
+  useEffect(() => {
+    scaleRef.current = scale;
+  }, [scale]);
+
+  // Compute dynamic SVG viewBox from scale + pan
+  const viewW = 1000 / scale;
+  const viewH = 1000 / scale;
+  const viewX = pan.x - viewW / 2;
+  const viewY = pan.y - viewH / 2;
+  const dynamicViewBox = `${viewX} ${viewY} ${viewW} ${viewH}`;
+
+  // Ref for wheel-to-zoom on web (callback ref so it works when map mounts later)
+  const canvasRef = useRef(null);
+  const containerSizeRef = useRef(canvasSize);
+  const wheelCleanupRef = useRef(null);
+
+  const setCanvasRef = (node) => {
+    // Cleanup previous listener
+    if (wheelCleanupRef.current) {
+      wheelCleanupRef.current();
+      wheelCleanupRef.current = null;
+    }
+    canvasRef.current = node;
+    if (Platform.OS !== 'web' || !node) return;
+
+    const handleWheel = (e) => {
+      e.preventDefault();
+      if (e.deltaY < 0) {
+        setScale((s) => Math.min(5, s * 1.15));
+      } else {
+        setScale((s) => Math.max(0.5, s / 1.15));
+      }
+    };
+
+    node.addEventListener('wheel', handleWheel, { passive: false });
+    wheelCleanupRef.current = () => node.removeEventListener('wheel', handleWheel);
+  };
+
+  const handleCanvasLayout = (e) => {
+    const { width, height } = e.nativeEvent.layout;
+    containerSizeRef.current = Math.min(width, height);
+  };
+
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (evt, gestureState) => {
+        return Math.abs(gestureState.dx) > 2 || Math.abs(gestureState.dy) > 2;
+      },
       onPanResponderGrant: () => {
         panStart.current = { x: panRef.current.x, y: panRef.current.y };
       },
       onPanResponderMove: (evt, gestureState) => {
+        const curScale = scaleRef.current;
+        const svgPerPx = 1000 / (curScale * containerSizeRef.current);
         setPan({
-          x: panStart.current.x + gestureState.dx,
-          y: panStart.current.y + gestureState.dy,
+          x: panStart.current.x - gestureState.dx * svgPerPx,
+          y: panStart.current.y - gestureState.dy * svgPerPx,
         });
       },
       onPanResponderRelease: () => {},
@@ -340,6 +389,7 @@ function NavigationScreen({ campusId, campusName, onBack }) {
     const path = solveDijkstra(allNodes, allEdges, start.id, end.id);
     setSolvedPath(path);
     setActiveStepNodeId(null);
+    setCompletedStepIndex(-1);
 
     // Auto-focus starting node floor
     if (path && path.length > 0) {
@@ -359,7 +409,7 @@ function NavigationScreen({ campusId, campusName, onBack }) {
   const zoomOut = () => setScale((s) => Math.max(0.5, s / 1.3));
   const resetZoom = () => {
     setScale(1);
-    setPan({ x: 0, y: 0 });
+    setPan({ x: 500, y: 500 });
   };
 
   const handleSelectStep = (step) => {
@@ -374,14 +424,32 @@ function NavigationScreen({ campusId, campusName, onBack }) {
       if (building) setSelectedBuilding(building);
     }
 
-    // Zoom in and Center map on node
+    // Zoom in and center the viewport on this node's SVG coordinates
     const targetScale = 2;
-    const px = canvasSize / 2 - (node.x / 1000) * canvasSize * targetScale;
-    const py = canvasSize / 2 - (node.y / 1000) * canvasSize * targetScale;
-
     setScale(targetScale);
-    setPan({ x: px, y: py });
+    setPan({ x: node.x, y: node.y });
     setActiveStepNodeId(node.id);
+  };
+
+  const handleToggleStepDone = (idx, e) => {
+    e.stopPropagation();
+    if (completedStepIndex >= idx) {
+      setCompletedStepIndex(idx - 1);
+    } else {
+      setCompletedStepIndex(idx);
+      // Highlight next step without zooming/panning
+      if (idx < routeInstructions.length - 1) {
+        const nextStep = routeInstructions[idx + 1];
+        setActiveStepNodeId(nextStep.nodeId);
+        // Switch floor if needed
+        const stepFloor = floors.find((f) => f.id === nextStep.floorId);
+        if (stepFloor) {
+          setSelectedFloor(stepFloor);
+          const building = buildings.find((b) => (b.floors || []).some((f) => f.id === nextStep.floorId));
+          if (building) setSelectedBuilding(building);
+        }
+      }
+    }
   };
 
   const activeNodes = useMemo(() => {
@@ -505,209 +573,209 @@ function NavigationScreen({ campusId, campusName, onBack }) {
                 <Text style={navStyles.placeholderText}>No floor plan available</Text>
               </View>
             ) : (
-              <View style={navStyles.canvasWrapper} {...panResponder.panHandlers}>
-                <View
-                  style={{
-                    width: canvasSize,
-                    height: canvasSize,
-                    transform: [
-                      { translateX: pan.x },
-                      { translateY: pan.y },
-                      { scale: scale },
-                    ],
-                  }}
-                >
-                  <Svg viewBox="0 0 1000 1000" width={canvasSize} height={canvasSize}>
-                    {/* Background floor plan image */}
-                    {selectedFloor?.floor_plan_url && (
-                      <SvgImage
-                        href={Platform.OS === 'web' ? selectedFloor.floor_plan_url : { uri: selectedFloor.floor_plan_url }}
-                        x="0"
-                        y="0"
-                        width="1000"
-                        height="1000"
-                        preserveAspectRatio="xMidYMid meet"
-                      />
-                    )}
+              <View
+                ref={setCanvasRef}
+                style={navStyles.canvasWrapper}
+                onLayout={handleCanvasLayout}
+                {...panResponder.panHandlers}
+              >
+                <Svg viewBox={dynamicViewBox} width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
+                      {/* Background floor plan image */}
+                      {selectedFloor?.floor_plan_url && (
+                        <SvgImage
+                          href={Platform.OS === 'web' ? selectedFloor.floor_plan_url : { uri: selectedFloor.floor_plan_url }}
+                          x="0"
+                          y="0"
+                          width="1000"
+                          height="1000"
+                          preserveAspectRatio="xMidYMid meet"
+                        />
+                      )}
 
-                    {/* 1. Draw Normal Edges */}
-                    {activeEdges.map((edge) => {
-                      const fromNode = nodeMap.get(edge.from_node_id);
-                      const toNode = nodeMap.get(edge.to_node_id);
-                      if (!fromNode || !toNode) return null;
+                      {/* 1. Draw Normal Edges */}
+                      {activeEdges.map((edge) => {
+                        const fromNode = nodeMap.get(edge.from_node_id);
+                        const toNode = nodeMap.get(edge.to_node_id);
+                        if (!fromNode || !toNode) return null;
 
-                      // Check if edge is in solved path on this floor
-                      let inPath = false;
-                      for (let i = 0; i < solvedPath.length - 1; i++) {
-                        if (
-                          ((solvedPath[i] === fromNode.id && solvedPath[i + 1] === toNode.id) ||
-                            (solvedPath[i] === toNode.id && solvedPath[i + 1] === fromNode.id)) &&
-                          fromNode.floor_id === selectedFloor.id &&
-                          toNode.floor_id === selectedFloor.id
-                        ) {
-                          inPath = true;
-                          break;
+                        // Check if edge is in solved path on this floor
+                        let inPath = false;
+                        for (let i = 0; i < solvedPath.length - 1; i++) {
+                          if (
+                            ((solvedPath[i] === fromNode.id && solvedPath[i + 1] === toNode.id) ||
+                              (solvedPath[i] === toNode.id && solvedPath[i + 1] === fromNode.id)) &&
+                            fromNode.floor_id === selectedFloor.id &&
+                            toNode.floor_id === selectedFloor.id
+                          ) {
+                            inPath = true;
+                            break;
+                          }
                         }
-                      }
 
-                      if (!inPath) {
-                        return (
-                          <Line
-                            key={edge.id}
-                            x1={fromNode.x}
-                            y1={fromNode.y}
-                            x2={toNode.x}
-                            y2={toNode.y}
-                            stroke="#E5E5E5"
-                            strokeWidth={2}
-                          />
-                        );
-                      }
-                      return null;
-                    })}
-
-                    {/* 2. Draw Shortest Path Edges */}
-                    {solvedPath.map((nodeId, idx) => {
-                      if (idx === solvedPath.length - 1) return null;
-                      const fromNode = nodeMap.get(nodeId);
-                      const toNode = nodeMap.get(solvedPath[idx + 1]);
-                      if (!fromNode || !toNode) return null;
-
-                      // Only draw if both nodes are on the current selected floor
-                      if (fromNode.floor_id === selectedFloor?.id && toNode.floor_id === selectedFloor?.id) {
-                        return (
-                          <Line
-                            key={`path-${idx}`}
-                            x1={fromNode.x}
-                            y1={fromNode.y}
-                            x2={toNode.x}
-                            y2={toNode.y}
-                            stroke="#000000"
-                            strokeWidth={8}
-                            strokeLinecap="round"
-                          />
-                        );
-                      }
-                      return null;
-                    })}
-
-                    {/* 3. Draw Nodes */}
-                    {activeNodes.map((node) => {
-                      const isStart = startNode?.id === node.id;
-                      const isEnd = endNode?.id === node.id;
-                      const isHighlight = activeStepNodeId === node.id;
-
-                      // Corridor nodes don't need text or large circle unless selected
-                      if (node.type.toLowerCase() === 'corridor' && !isStart && !isEnd && !isHighlight) {
-                        return (
-                          <Circle
-                            key={node.id}
-                            cx={node.x}
-                            cy={node.y}
-                            r={4}
-                            fill="#CCCCCC"
-                          />
-                        );
-                      }
-
-                      return (
-                        <G key={node.id}>
-                          <Circle
-                            cx={node.x}
-                            cy={node.y}
-                            r={isHighlight ? 12 : 8}
-                            fill={isStart ? '#000000' : isEnd ? '#000000' : isHighlight ? '#000000' : getColorForType(node.type)}
-                            stroke="#FFFFFF"
-                            strokeWidth={2}
-                          />
-
-                          {/* Pulsing ring for selected start/destination/active-step */}
-                          {(isStart || isEnd || isHighlight) && (
-                            <Circle
-                              cx={node.x}
-                              cy={node.y}
-                              r={isHighlight ? 18 : 14}
-                              fill="none"
-                              stroke="#000000"
-                              strokeWidth={1.5}
-                              strokeDasharray="4,4"
-                            />
-                          )}
-
-                          {node.label && (
-                            <SvgText
-                              x={node.x}
-                              y={node.y - 12}
-                              fontSize={12}
-                              fontWeight="bold"
-                              fill="#000000"
-                              textAnchor="middle"
-                              stroke="#FFFFFF"
-                              strokeWidth={0.5}
-                            >
-                              {node.label}
-                            </SvgText>
-                          )}
-                        </G>
-                      );
-                    })}
-
-                    {/* 4. Draw Floor transitions */}
-                    {activeNodes.map((node) => {
-                      if (!solvedPath.includes(node.id)) return null;
-                      const idx = solvedPath.indexOf(node.id);
-                      if (idx === -1 || idx === solvedPath.length - 1) return null;
-
-                      const nextNodeId = solvedPath[idx + 1];
-                      const nextNode = nodeMap.get(nextNodeId);
-                      if (nextNode && nextNode.floor_id !== selectedFloor?.id) {
-                        // Node transitions to another floor!
-                        const targetFloor = floors.find((f) => f.id === nextNode.floor_id);
-                        const isUp = targetFloor ? targetFloor.level > selectedFloor.level : false;
-                        const directionText = `${node.type === 'lift' ? '🛗' : '📶'} To ${targetFloor?.name || 'next floor'}`;
-
-                        return (
-                          <G key={`trans-${node.id}`}>
-                            <Circle
-                              cx={node.x}
-                              cy={node.y}
-                              r={16}
-                              fill="none"
-                              stroke="#000000"
+                        if (!inPath) {
+                          return (
+                            <Line
+                              key={edge.id}
+                              x1={fromNode.x}
+                              y1={fromNode.y}
+                              x2={toNode.x}
+                              y2={toNode.y}
+                              stroke="#E5E5E5"
                               strokeWidth={2}
                             />
-                            <SvgText
-                              x={node.x}
-                              y={node.y + 24}
-                              fontSize={11}
-                              fontWeight="bold"
-                              fill="#000000"
-                              textAnchor="middle"
+                          );
+                        }
+                        return null;
+                      })}
+
+                      {/* 2. Draw Shortest Path Edges */}
+                      {solvedPath.map((nodeId, idx) => {
+                        if (idx === solvedPath.length - 1) return null;
+                        const fromNode = nodeMap.get(nodeId);
+                        const toNode = nodeMap.get(solvedPath[idx + 1]);
+                        if (!fromNode || !toNode) return null;
+
+                        // Only draw if both nodes are on the current selected floor
+                        if (fromNode.floor_id === selectedFloor?.id && toNode.floor_id === selectedFloor?.id) {
+                          const isSegmentCompleted = completedStepIndex >= idx + 1;
+                          return (
+                            <Line
+                              key={`path-${idx}`}
+                              x1={fromNode.x}
+                              y1={fromNode.y}
+                              x2={toNode.x}
+                              y2={toNode.y}
+                              stroke={isSegmentCompleted ? "#CCCCCC" : "#000000"}
+                              strokeWidth={isSegmentCompleted ? 4 : 8}
+                              strokeDasharray={isSegmentCompleted ? "6,6" : undefined}
+                              strokeLinecap="round"
+                            />
+                          );
+                        }
+                        return null;
+                      })}
+
+                      {/* 3. Draw Nodes */}
+                      {activeNodes.map((node) => {
+                        const isStart = startNode?.id === node.id;
+                        const isEnd = endNode?.id === node.id;
+                        const isHighlight = activeStepNodeId === node.id;
+
+                        const nodeIdx = solvedPath.indexOf(node.id);
+                        const isNodeCompleted = nodeIdx !== -1 && completedStepIndex >= nodeIdx;
+
+                        // Corridor nodes don't need text or large circle unless selected
+                        if (node.type.toLowerCase() === 'corridor' && !isStart && !isEnd && !isHighlight) {
+                          return (
+                            <Circle
+                              key={node.id}
+                              cx={node.x}
+                              cy={node.y}
+                              r={4}
+                              fill={isNodeCompleted ? "#E5E5E5" : "#CCCCCC"}
+                            />
+                          );
+                        }
+
+                        return (
+                          <G key={node.id} opacity={isNodeCompleted && !isHighlight && !isStart && !isEnd ? 0.3 : 1}>
+                            <Circle
+                              cx={node.x}
+                              cy={node.y}
+                              r={isHighlight ? 12 : 8}
+                              fill={isStart ? '#000000' : isEnd ? '#000000' : isHighlight ? '#000000' : getColorForType(node.type)}
                               stroke="#FFFFFF"
-                              strokeWidth={0.5}
-                            >
-                              {directionText}
-                            </SvgText>
+                              strokeWidth={2}
+                            />
+
+                            {/* Pulsing ring for selected start/destination/active-step */}
+                            {(isStart || isEnd || isHighlight) && (
+                              <Circle
+                                cx={node.x}
+                                cy={node.y}
+                                r={isHighlight ? 18 : 14}
+                                fill="none"
+                                stroke="#000000"
+                                strokeWidth={1.5}
+                                strokeDasharray="4,4"
+                              />
+                            )}
+
+                            {node.label && (
+                              <SvgText
+                                x={node.x}
+                                y={node.y - 12}
+                                fontSize={12}
+                                fontWeight="bold"
+                                fill="#000000"
+                                textAnchor="middle"
+                                stroke="#FFFFFF"
+                                strokeWidth={0.5}
+                              >
+                                {node.label}
+                              </SvgText>
+                            )}
                           </G>
                         );
-                      }
-                      return null;
-                    })}
-                  </Svg>
-                </View>
+                      })}
 
-                {/* Floating zoom HUD controls */}
-                <View style={navStyles.zoomHUD}>
-                  <TouchableOpacity style={navStyles.hudBtn} onPress={zoomIn}>
-                    <Text style={navStyles.hudBtnText}>+</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={navStyles.hudBtn} onPress={zoomOut}>
-                    <Text style={navStyles.hudBtnText}>-</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={navStyles.hudBtn} onPress={resetZoom}>
-                    <Text style={[navStyles.hudBtnText, { fontSize: 16 }]}>↺</Text>
-                  </TouchableOpacity>
-                </View>
+                      {/* 4. Draw Floor transitions */}
+                      {activeNodes.map((node) => {
+                        if (!solvedPath.includes(node.id)) return null;
+                        const idx = solvedPath.indexOf(node.id);
+                        if (idx === -1 || idx === solvedPath.length - 1) return null;
+
+                        const nextNodeId = solvedPath[idx + 1];
+                        const nextNode = nodeMap.get(nextNodeId);
+                        if (nextNode && nextNode.floor_id !== selectedFloor?.id) {
+                          // Node transitions to another floor!
+                          const targetFloor = floors.find((f) => f.id === nextNode.floor_id);
+                          const isUp = targetFloor ? targetFloor.level > selectedFloor.level : false;
+                          const directionText = `${node.type === 'lift' ? '🛗' : '📶'} To ${targetFloor?.name || 'next floor'}`;
+
+                          return (
+                            <G key={`trans-${node.id}`}>
+                              <Circle
+                                cx={node.x}
+                                cy={node.y}
+                                r={16}
+                                fill="none"
+                                stroke="#000000"
+                                strokeWidth={2}
+                              />
+                              <SvgText
+                                x={node.x}
+                                y={node.y + 24}
+                                fontSize={11}
+                                fontWeight="bold"
+                                fill="#000000"
+                                textAnchor="middle"
+                                stroke="#FFFFFF"
+                                strokeWidth={0.5}
+                              >
+                                {directionText}
+                              </SvgText>
+                            </G>
+                          );
+                        }
+                        return null;
+                      })}
+                  </Svg>
+              </View>
+            )}
+
+            {/* Floating zoom HUD controls — outside inner view, inside canvasContainer */}
+            {selectedFloor?.floor_plan_url && (
+              <View style={navStyles.zoomHUD}>
+                <TouchableOpacity style={navStyles.hudBtn} onPress={zoomIn}>
+                  <Text style={navStyles.hudBtnText}>+</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={navStyles.hudBtn} onPress={zoomOut}>
+                  <Text style={navStyles.hudBtnText}>-</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={navStyles.hudBtn} onPress={resetZoom}>
+                  <Text style={[navStyles.hudBtnText, { fontSize: 16 }]}>↺</Text>
+                </TouchableOpacity>
               </View>
             )}
           </View>
@@ -767,32 +835,57 @@ function NavigationScreen({ campusId, campusName, onBack }) {
               <ScrollView style={navStyles.stepsScroll} showsVerticalScrollIndicator={false}>
                 {routeInstructions.map((step, idx) => {
                   const isHighlighted = activeStepNodeId === step.nodeId;
+                  const isCompleted = completedStepIndex >= idx;
+
                   return (
                     <TouchableOpacity
                       key={`step-${idx}`}
                       style={[
                         navStyles.stepRow,
                         isHighlighted && navStyles.stepRowHighlighted,
+                        isCompleted && navStyles.stepRowCompleted,
                       ]}
                       onPress={() => handleSelectStep(step)}
                       activeOpacity={0.7}
                     >
                       <View style={navStyles.stepIconCol}>
-                        <Text style={navStyles.stepEmoji}>
-                          {getDirectionIcon(step.type)}
+                        <Text style={[navStyles.stepEmoji, isCompleted && { opacity: 0.4 }]}>
+                          {isCompleted ? '✅' : getDirectionIcon(step.type)}
                         </Text>
                         {idx < routeInstructions.length - 1 && (
-                          <View style={navStyles.stepTimelineLine} />
+                          <View style={[
+                            navStyles.stepTimelineLine,
+                            isCompleted && navStyles.stepTimelineLineCompleted
+                          ]} />
                         )}
                       </View>
                       <View style={navStyles.stepTextCol}>
                         <Text style={[
                           navStyles.stepText,
-                          isHighlighted && navStyles.stepTextHighlighted
+                          isHighlighted && navStyles.stepTextHighlighted,
+                          isCompleted && navStyles.stepTextCompleted
                         ]}>
                           {step.text}
                         </Text>
                       </View>
+
+                      {/* Done Toggle Button */}
+                      {idx > 0 && (
+                        <TouchableOpacity
+                          style={[
+                            navStyles.doneToggleBtn,
+                            isCompleted && navStyles.doneToggleBtnCompleted
+                          ]}
+                          onPress={(e) => handleToggleStepDone(idx, e)}
+                        >
+                          <Text style={[
+                            navStyles.doneToggleText,
+                            isCompleted && navStyles.doneToggleTextCompleted
+                          ]}>
+                            {isCompleted ? 'Undo' : 'Done'}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
                     </TouchableOpacity>
                   );
                 })}
@@ -1356,11 +1449,10 @@ const navStyles = StyleSheet.create({
     position: 'relative',
   },
   canvasWrapper: {
-    width: canvasSize,
-    height: canvasSize,
+    flex: 1,
+    width: '100%',
     overflow: 'hidden',
     borderRadius: 12,
-    position: 'relative',
   },
   mapPlaceholder: {
     flex: 1,
@@ -1436,6 +1528,7 @@ const navStyles = StyleSheet.create({
     position: 'absolute',
     bottom: 12,
     right: 12,
+    zIndex: 10,
     backgroundColor: '#FFFFFF',
     borderRadius: 8,
     borderWidth: 1,
@@ -1517,6 +1610,9 @@ const navStyles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E5E5E5',
   },
+  stepRowCompleted: {
+    opacity: 0.6,
+  },
   stepIconCol: {
     width: 32,
     alignItems: 'center',
@@ -1529,6 +1625,9 @@ const navStyles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#E5E5E5',
     marginTop: 8,
+  },
+  stepTimelineLineCompleted: {
+    backgroundColor: '#CCCCCC',
   },
   stepTextCol: {
     flex: 1,
@@ -1543,6 +1642,31 @@ const navStyles = StyleSheet.create({
   stepTextHighlighted: {
     color: '#000000',
     fontWeight: 'bold',
+  },
+  stepTextCompleted: {
+    textDecorationLine: 'line-through',
+    color: '#999999',
+  },
+  doneToggleBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#000000',
+    backgroundColor: '#FFFFFF',
+    marginLeft: 8,
+  },
+  doneToggleText: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#000000',
+  },
+  doneToggleBtnCompleted: {
+    borderColor: '#E5E5E5',
+    backgroundColor: '#F9F9F9',
+  },
+  doneToggleTextCompleted: {
+    color: '#999999',
   },
   center: {
     flex: 1,
