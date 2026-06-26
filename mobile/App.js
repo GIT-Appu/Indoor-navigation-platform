@@ -15,12 +15,40 @@ import {
   StatusBar,
   PanResponder,
 } from 'react-native';
-import Svg, { Line, Circle, Text as SvgText, G, Image as SvgImage } from 'react-native-svg';
+import Svg, { Line, Circle, Text as SvgText, G, Image as SvgImage, Defs, RadialGradient, Stop, Rect, Path } from 'react-native-svg';
 import { supabase } from './supabase';
 import { solveDijkstra } from './dijkstra';
 
 const { width } = Dimensions.get('window');
 const canvasSize = width - 48; // Padding of 24 on left/right
+
+function BuildingIcon({ size = 16, color = '#111111' }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M3 21h18M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16M9 9h2v2H9V9zm0 4h2v2H9v-2zm4-4h2v2h-2V9zm0 4h2v2h-2v-2z"
+        stroke={color}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+function FloorIcon({ size = 16, color = '#111111' }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M2 17l10 5 10-5M2 12l10 5 10-5M12 2L2 7l10 5 10-5-10-5z"
+        stroke={color}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState('Welcome');
@@ -65,6 +93,7 @@ export default function App() {
 function WelcomeScreen({ onEnter }) {
   return (
     <View style={welcomeStyles.wrap}>
+
       <View style={welcomeStyles.gridBackground}>
         {/* Draw subtle business grids */}
         {Array.from({ length: 15 }).map((_, i) => (
@@ -227,6 +256,11 @@ function NavigationScreen({ campusId, campusName, onBack }) {
   const panRef = useRef({ x: 500, y: 500 });
   const scaleRef = useRef(1);
   const panStart = useRef({ x: 500, y: 500 });
+  const initialDistanceRef = useRef(0);
+  const initialScaleRef = useRef(1);
+  const isPinchingRef = useRef(false);
+  const lastTouchXRef = useRef(0);
+  const lastTouchYRef = useRef(0);
 
   // Keep refs in sync so PanResponder closures always have current values
   useEffect(() => {
@@ -278,22 +312,63 @@ function NavigationScreen({ campusId, campusName, onBack }) {
 
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (evt, gestureState) => {
-        return Math.abs(gestureState.dx) > 2 || Math.abs(gestureState.dy) > 2;
-      },
-      onPanResponderGrant: () => {
-        panStart.current = { x: panRef.current.x, y: panRef.current.y };
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (evt) => {
+        const touches = evt.nativeEvent.touches || [];
+        if (touches.length === 2) {
+          isPinchingRef.current = true;
+          initialDistanceRef.current = Math.hypot(
+            touches[0].pageX - touches[1].pageX,
+            touches[0].pageY - touches[1].pageY
+          );
+          initialScaleRef.current = scaleRef.current;
+        } else if (touches.length === 1) {
+          isPinchingRef.current = false;
+          const touch = touches[0];
+          lastTouchXRef.current = touch.pageX;
+          lastTouchYRef.current = touch.pageY;
+        }
       },
       onPanResponderMove: (evt, gestureState) => {
-        const curScale = scaleRef.current;
-        const svgPerPx = 1000 / (curScale * containerSizeRef.current);
-        setPan({
-          x: panStart.current.x - gestureState.dx * svgPerPx,
-          y: panStart.current.y - gestureState.dy * svgPerPx,
-        });
+        const touches = evt.nativeEvent.touches || [];
+        if (touches.length === 2) {
+          const dist = Math.hypot(
+            touches[0].pageX - touches[1].pageX,
+            touches[0].pageY - touches[1].pageY
+          );
+          if (!isPinchingRef.current) {
+            isPinchingRef.current = true;
+            initialDistanceRef.current = dist;
+            initialScaleRef.current = scaleRef.current;
+          } else {
+            const newScale = initialScaleRef.current * (dist / initialDistanceRef.current);
+            setScale(Math.max(0.5, Math.min(5, newScale)));
+          }
+        } else if (touches.length === 1) {
+          isPinchingRef.current = false;
+          const touch = touches[0];
+          const deltaX = touch.pageX - lastTouchXRef.current;
+          const deltaY = touch.pageY - lastTouchYRef.current;
+          
+          const curScale = scaleRef.current;
+          const svgPerPx = 1000 / (curScale * containerSizeRef.current);
+          
+          setPan((prev) => ({
+            x: prev.x - deltaX * svgPerPx,
+            y: prev.y - deltaY * svgPerPx,
+          }));
+          
+          lastTouchXRef.current = touch.pageX;
+          lastTouchYRef.current = touch.pageY;
+        }
       },
-      onPanResponderRelease: () => {},
+      onPanResponderRelease: () => {
+        isPinchingRef.current = false;
+      },
+      onPanResponderTerminate: () => {
+        isPinchingRef.current = false;
+      },
     })
   ).current;
 
@@ -513,17 +588,17 @@ function NavigationScreen({ campusId, campusName, onBack }) {
   const getColorForType = (type) => {
     switch (type.toLowerCase()) {
       case 'room':
-        return '#000000';
+        return '#888888';
       case 'stair':
-        return '#888888';
+        return '#FFCB74';
       case 'lift':
-        return '#888888';
+        return '#FFCB74';
       case 'entrance':
-        return '#000000';
+        return '#10B981';
       case 'poi':
-        return '#333333';
+        return '#F59E0B';
       default:
-        return '#CCCCCC';
+        return '#9CA3AF';
     }
   };
 
@@ -550,18 +625,22 @@ function NavigationScreen({ campusId, campusName, onBack }) {
             <TouchableOpacity
               style={navStyles.selectorBtn}
               onPress={() => setBuildingPickerVisible(true)}
+              activeOpacity={0.7}
             >
+              <BuildingIcon size={14} color="#111111" />
               <Text style={navStyles.selectorLabel} numberOfLines={1}>
-                🏢 {selectedBuilding ? selectedBuilding.name : 'Select Building'}
+                {selectedBuilding ? selectedBuilding.name : 'Select Building'}
               </Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               style={navStyles.selectorBtn}
               onPress={() => setFloorPickerVisible(true)}
+              activeOpacity={0.7}
             >
+              <FloorIcon size={14} color="#111111" />
               <Text style={navStyles.selectorLabel} numberOfLines={1}>
-                📐 {selectedFloor ? selectedFloor.name : 'Select Floor'}
+                {selectedFloor ? selectedFloor.name : 'Select Floor'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -620,7 +699,7 @@ function NavigationScreen({ campusId, campusName, onBack }) {
                               y1={fromNode.y}
                               x2={toNode.x}
                               y2={toNode.y}
-                              stroke="#E5E5E5"
+                              stroke="rgba(0, 0, 0, 0.08)"
                               strokeWidth={2}
                             />
                           );
@@ -645,7 +724,7 @@ function NavigationScreen({ campusId, campusName, onBack }) {
                               y1={fromNode.y}
                               x2={toNode.x}
                               y2={toNode.y}
-                              stroke={isSegmentCompleted ? "#CCCCCC" : "#000000"}
+                              stroke={isSegmentCompleted ? "rgba(0, 0, 0, 0.15)" : "#111111"}
                               strokeWidth={isSegmentCompleted ? 4 : 8}
                               strokeDasharray={isSegmentCompleted ? "6,6" : undefined}
                               strokeLinecap="round"
@@ -672,7 +751,7 @@ function NavigationScreen({ campusId, campusName, onBack }) {
                               cx={node.x}
                               cy={node.y}
                               r={4}
-                              fill={isNodeCompleted ? "#E5E5E5" : "#CCCCCC"}
+                              fill={isNodeCompleted ? "rgba(0, 0, 0, 0.08)" : "rgba(0, 0, 0, 0.15)"}
                             />
                           );
                         }
@@ -683,8 +762,8 @@ function NavigationScreen({ campusId, campusName, onBack }) {
                               cx={node.x}
                               cy={node.y}
                               r={isHighlight ? 12 : 8}
-                              fill={isStart ? '#000000' : isEnd ? '#000000' : isHighlight ? '#000000' : getColorForType(node.type)}
-                              stroke="#FFFFFF"
+                              fill={isStart ? '#FFCB74' : isEnd ? '#10B981' : isHighlight ? '#FFCB74' : getColorForType(node.type)}
+                              stroke={isStart || isEnd || isHighlight ? '#111111' : '#FFFFFF'}
                               strokeWidth={2}
                             />
 
@@ -695,7 +774,7 @@ function NavigationScreen({ campusId, campusName, onBack }) {
                                 cy={node.y}
                                 r={isHighlight ? 18 : 14}
                                 fill="none"
-                                stroke="#000000"
+                                stroke={isStart ? '#FFCB74' : isEnd ? '#10B981' : '#FFCB74'}
                                 strokeWidth={1.5}
                                 strokeDasharray="4,4"
                               />
@@ -707,10 +786,10 @@ function NavigationScreen({ campusId, campusName, onBack }) {
                                 y={node.y - 12}
                                 fontSize={12}
                                 fontWeight="bold"
-                                fill="#000000"
+                                fill="#111111"
                                 textAnchor="middle"
                                 stroke="#FFFFFF"
-                                strokeWidth={0.5}
+                                strokeWidth={2.5}
                               >
                                 {node.label}
                               </SvgText>
@@ -730,31 +809,30 @@ function NavigationScreen({ campusId, campusName, onBack }) {
                         if (nextNode && nextNode.floor_id !== selectedFloor?.id) {
                           // Node transitions to another floor!
                           const targetFloor = floors.find((f) => f.id === nextNode.floor_id);
-                          const isUp = targetFloor ? targetFloor.level > selectedFloor.level : false;
-                          const directionText = `${node.type === 'lift' ? '🛗' : '📶'} To ${targetFloor?.name || 'next floor'}`;
+                          const directionText = `${node.type === 'lift' ? 'Lift' : 'Stairs'} to ${targetFloor?.name || 'next floor'}`;
 
                           return (
                             <G key={`trans-${node.id}`}>
-                              <Circle
-                                cx={node.x}
-                                cy={node.y}
-                                r={16}
-                                fill="none"
-                                stroke="#000000"
-                                strokeWidth={2}
-                              />
-                              <SvgText
-                                x={node.x}
-                                y={node.y + 24}
-                                fontSize={11}
-                                fontWeight="bold"
-                                fill="#000000"
-                                textAnchor="middle"
-                                stroke="#FFFFFF"
-                                strokeWidth={0.5}
-                              >
-                                {directionText}
-                              </SvgText>
+                               <Circle
+                                 cx={node.x}
+                                 cy={node.y}
+                                 r={16}
+                                 fill="none"
+                                 stroke="#111111"
+                                 strokeWidth={2}
+                               />
+                               <SvgText
+                                 x={node.x}
+                                 y={node.y + 24}
+                                 fontSize={11}
+                                 fontWeight="bold"
+                                 fill="#111111"
+                                 textAnchor="middle"
+                                 stroke="#FFFFFF"
+                                 strokeWidth={2.5}
+                               >
+                                 {directionText}
+                               </SvgText>
                             </G>
                           );
                         }
@@ -849,9 +927,13 @@ function NavigationScreen({ campusId, campusName, onBack }) {
                       activeOpacity={0.7}
                     >
                       <View style={navStyles.stepIconCol}>
-                        <Text style={[navStyles.stepEmoji, isCompleted && { opacity: 0.4 }]}>
-                          {isCompleted ? '✅' : getDirectionIcon(step.type)}
-                        </Text>
+                        {isCompleted ? (
+                          <Svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                            <Path d="M20 6L9 17L4 12" stroke="#FFCB74" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
+                          </Svg>
+                        ) : (
+                          <DirectionIcon type={step.type} size={16} color="#111111" />
+                        )}
                         {idx < routeInstructions.length - 1 && (
                           <View style={[
                             navStyles.stepTimelineLine,
@@ -1157,24 +1239,55 @@ function generateInstructions(path, nodesData, edgesData, buildingsData) {
   return steps;
 }
 
-const getDirectionIcon = (type) => {
+
+function DirectionIcon({ type, size = 16, color = '#111111' }) {
   switch (type) {
     case 'start':
-      return '🟢';
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+          <Circle cx="12" cy="12" r="10" stroke={color} strokeWidth="2.5" />
+          <Circle cx="12" cy="12" r="4" fill="#FFCB74" />
+        </Svg>
+      );
     case 'left':
-      return '👈';
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+          <Path d="M19 12H5M5 12L12 5M5 12L12 19" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        </Svg>
+      );
     case 'right':
-      return '👉';
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+          <Path d="M5 12H19M19 12L12 5M19 12L12 19" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        </Svg>
+      );
     case 'uturn':
-      return '🔄';
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+          <Path d="M8 18V9a4 4 0 0 1 8 0v9m0 0l-3-3m3 3l3-3" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        </Svg>
+      );
     case 'floor_change':
-      return '🛗';
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+          <Path d="M4 19h4v-4h4v-4h4V7h4" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        </Svg>
+      );
     case 'arrive':
-      return '📍';
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+          <Path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z" stroke={color} strokeWidth="2" fill="#FFCB74" />
+          <Circle cx="12" cy="10" r="3" fill="#111111" />
+        </Svg>
+      );
     default:
-      return '⬆️';
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+          <Path d="M12 19V5M12 5L5 12M12 5L19 12" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        </Svg>
+      );
   }
-};
+}
 
 const styles = StyleSheet.create({
   container: {
@@ -1202,14 +1315,14 @@ const welcomeStyles = StyleSheet.create({
     left: 0,
     right: 0,
     height: 1,
-    backgroundColor: 'rgba(17, 17, 17, 0.025)',
+    backgroundColor: 'rgba(0, 0, 0, 0.025)',
   },
   gridLineV: {
     position: 'absolute',
     top: 0,
     bottom: 0,
     width: 1,
-    backgroundColor: 'rgba(17, 17, 17, 0.025)',
+    backgroundColor: 'rgba(0, 0, 0, 0.025)',
   },
   content: {
     flex: 1,
@@ -1225,26 +1338,31 @@ const welcomeStyles = StyleSheet.create({
     alignItems: 'center',
   },
   logoRing: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    borderWidth: 2,
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    borderWidth: 2.5,
     borderColor: '#111111',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 32,
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
   },
   logoDot: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: '#111111',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#FFCB74',
   },
   title: {
     fontSize: 40,
     fontWeight: '900',
     letterSpacing: -1,
-    color: '#000000',
+    color: '#111111',
   },
   subtitle: {
     fontSize: 10,
@@ -1257,22 +1375,22 @@ const welcomeStyles = StyleSheet.create({
     alignItems: 'center',
   },
   button: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#000000',
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: '#111111',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 8 },
+    shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.1,
-    shadowRadius: 16,
+    shadowRadius: 12,
     elevation: 4,
     marginBottom: 16,
   },
   arrowText: {
     color: '#FFFFFF',
-    fontSize: 28,
+    fontSize: 32,
     fontWeight: 'bold',
   },
   ctaText: {
@@ -1303,12 +1421,12 @@ const listStyles = StyleSheet.create({
   backArrow: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#000000',
+    color: '#111111',
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: '900',
-    color: '#000000',
+    color: '#111111',
   },
   searchContainer: {
     paddingHorizontal: 24,
@@ -1321,7 +1439,7 @@ const listStyles = StyleSheet.create({
     paddingHorizontal: 16,
     borderWidth: 1,
     borderColor: '#E5E5E5',
-    color: '#000000',
+    color: '#111111',
     fontSize: 14,
   },
   center: {
@@ -1330,14 +1448,14 @@ const listStyles = StyleSheet.create({
     alignItems: 'center',
   },
   emptyText: {
-    color: '#999',
+    color: '#666666',
     fontSize: 15,
   },
   retryBtn: {
     marginTop: 12,
     paddingHorizontal: 20,
     paddingVertical: 8,
-    backgroundColor: '#000000',
+    backgroundColor: '#111111',
     borderRadius: 8,
   },
   retryText: {
@@ -1361,6 +1479,11 @@ const listStyles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E5E5E5',
     marginBottom: 16,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
   },
   cardInfo: {
     flex: 1,
@@ -1368,7 +1491,7 @@ const listStyles = StyleSheet.create({
   cardName: {
     fontSize: 17,
     fontWeight: 'bold',
-    color: '#000000',
+    color: '#111111',
   },
   cardDesc: {
     fontSize: 13,
@@ -1378,7 +1501,7 @@ const listStyles = StyleSheet.create({
   cardArrow: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#000000',
+    color: '#111111',
     marginLeft: 12,
   },
 });
@@ -1403,12 +1526,12 @@ const navStyles = StyleSheet.create({
   backArrow: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#000000',
+    color: '#111111',
   },
   headerTitle: {
     fontSize: 20,
     fontWeight: '900',
-    color: '#000000',
+    color: '#111111',
     flex: 1,
   },
   content: {
@@ -1423,10 +1546,12 @@ const navStyles = StyleSheet.create({
   selectorBtn: {
     flex: 1,
     height: 44,
-    backgroundColor: '#F9F9F9',
+    backgroundColor: '#FFFFFF',
     borderRadius: 10,
     borderWidth: 1,
     borderColor: '#E5E5E5',
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 12,
     marginHorizontal: 4,
@@ -1434,7 +1559,8 @@ const navStyles = StyleSheet.create({
   selectorLabel: {
     fontSize: 13,
     fontWeight: 'bold',
-    color: '#000000',
+    color: '#111111',
+    marginLeft: 6,
   },
   canvasContainer: {
     flex: 4,
@@ -1460,15 +1586,15 @@ const navStyles = StyleSheet.create({
     alignItems: 'center',
   },
   placeholderText: {
-    color: '#999',
+    color: '#9CA3AF',
     fontWeight: 'bold',
   },
   routeCard: {
     flexDirection: 'row',
-    backgroundColor: '#F9F9F9',
+    backgroundColor: '#F6F6F6',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#E5E5E5',
+    borderColor: 'rgba(0, 0, 0, 0.08)',
     padding: 12,
     marginBottom: 16,
   },
@@ -1482,15 +1608,15 @@ const navStyles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#000000',
+    backgroundColor: '#FFCB74',
   },
   routeDotRed: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#000000',
+    backgroundColor: '#10B981',
     borderWidth: 1.5,
-    borderColor: '#000000',
+    borderColor: '#10B981',
   },
   routeDottedLine: {
     flex: 1,
@@ -1511,17 +1637,17 @@ const navStyles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '900',
     letterSpacing: 1.5,
-    color: '#999999',
+    color: '#666666',
     marginBottom: 2,
   },
   routeInputText: {
     fontSize: 13,
-    color: '#000000',
+    color: '#111111',
     fontWeight: 'bold',
   },
   routeInputDivider: {
     height: 1,
-    backgroundColor: '#E5E5E5',
+    backgroundColor: 'rgba(0, 0, 0, 0.08)',
     marginVertical: 8,
   },
   zoomHUD: {
@@ -1537,7 +1663,7 @@ const navStyles = StyleSheet.create({
     alignItems: 'center',
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.05,
     shadowRadius: 4,
     elevation: 2,
   },
@@ -1551,14 +1677,14 @@ const navStyles = StyleSheet.create({
   hudBtnText: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#000000',
+    color: '#111111',
   },
   directionsPanel: {
     flex: 3,
-    backgroundColor: '#F9F9F9',
+    backgroundColor: '#F6F6F6',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#E5E5E5',
+    borderColor: 'rgba(0, 0, 0, 0.08)',
     padding: 16,
   },
   directionsHeader: {
@@ -1571,13 +1697,13 @@ const navStyles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '900',
     letterSpacing: 2,
-    color: '#999999',
+    color: '#666666',
   },
   distanceBadge: {
     fontSize: 10,
     fontWeight: '900',
-    backgroundColor: '#000000',
-    color: '#FFFFFF',
+    backgroundColor: '#111111',
+    color: '#FFCB74',
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 4,
@@ -1608,10 +1734,10 @@ const navStyles = StyleSheet.create({
   stepRowHighlighted: {
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#E5E5E5',
+    borderColor: 'rgba(0, 0, 0, 0.08)',
   },
   stepRowCompleted: {
-    opacity: 0.6,
+    opacity: 0.4,
   },
   stepIconCol: {
     width: 32,
@@ -1623,11 +1749,11 @@ const navStyles = StyleSheet.create({
   stepTimelineLine: {
     width: 2,
     flex: 1,
-    backgroundColor: '#E5E5E5',
+    backgroundColor: 'rgba(0, 0, 0, 0.08)',
     marginTop: 8,
   },
   stepTimelineLineCompleted: {
-    backgroundColor: '#CCCCCC',
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
   },
   stepTextCol: {
     flex: 1,
@@ -1636,37 +1762,37 @@ const navStyles = StyleSheet.create({
   },
   stepText: {
     fontSize: 13,
-    color: '#666666',
+    color: '#2F2F2F',
     lineHeight: 18,
   },
   stepTextHighlighted: {
-    color: '#000000',
+    color: '#111111',
     fontWeight: 'bold',
   },
   stepTextCompleted: {
     textDecorationLine: 'line-through',
-    color: '#999999',
+    color: '#CCCCCC',
   },
   doneToggleBtn: {
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: '#000000',
+    borderColor: '#111111',
     backgroundColor: '#FFFFFF',
     marginLeft: 8,
   },
   doneToggleText: {
     fontSize: 11,
     fontWeight: 'bold',
-    color: '#000000',
+    color: '#111111',
   },
   doneToggleBtnCompleted: {
-    borderColor: '#E5E5E5',
-    backgroundColor: '#F9F9F9',
+    borderColor: 'rgba(0, 0, 0, 0.08)',
+    backgroundColor: '#E5E5E5',
   },
   doneToggleTextCompleted: {
-    color: '#999999',
+    color: '#888888',
   },
   center: {
     flex: 1,
@@ -1678,7 +1804,7 @@ const navStyles = StyleSheet.create({
 const modalStyles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
     justifyContent: 'flex-end',
   },
   card: {
@@ -1687,6 +1813,11 @@ const modalStyles = StyleSheet.create({
     borderTopRightRadius: 20,
     maxHeight: '70%',
     paddingBottom: 24,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 5,
   },
   header: {
     flexDirection: 'row',
@@ -1700,7 +1831,7 @@ const modalStyles = StyleSheet.create({
   title: {
     fontSize: 17,
     fontWeight: 'bold',
-    color: '#000000',
+    color: '#111111',
   },
   closeBtn: {
     fontSize: 24,
@@ -1714,18 +1845,18 @@ const modalStyles = StyleSheet.create({
   },
   searchInput: {
     height: 40,
-    backgroundColor: '#F9F9F9',
+    backgroundColor: '#F5F5F5',
     borderRadius: 8,
     paddingHorizontal: 12,
     borderWidth: 1,
     borderColor: '#E5E5E5',
-    color: '#000000',
+    color: '#111111',
     fontSize: 14,
   },
   noResults: {
     paddingVertical: 32,
     textAlign: 'center',
-    color: '#999999',
+    color: '#666666',
     fontSize: 14,
   },
   scroll: {
@@ -1737,21 +1868,21 @@ const modalStyles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
+    borderBottomColor: '#F5F5F5',
   },
   optionSelected: {
     backgroundColor: '#F9F9F9',
   },
   optionText: {
     fontSize: 15,
-    color: '#333333',
+    color: '#666666',
   },
   optionTextSelected: {
-    color: '#000000',
+    color: '#111111',
     fontWeight: 'bold',
   },
   selectedCheck: {
-    color: '#000000',
+    color: '#111111',
     fontWeight: 'bold',
   },
 });
