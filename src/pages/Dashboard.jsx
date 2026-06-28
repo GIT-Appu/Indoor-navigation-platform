@@ -285,7 +285,7 @@ export default function Dashboard() {
       await loadCampuses()
       setSelectedCampusId(result.id)
     } catch (err) {
-      alert('Failed to add campus: ' + err.message)
+      alert('Failed to add venue: ' + err.message)
     }
   }
 
@@ -1212,9 +1212,9 @@ export default function Dashboard() {
 
             {activeModal === 'delete_campus' && modalTarget && (
               <>
-                <h3 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-display)', color: 'var(--danger)' }}>Delete Campus?</h3>
+                <h3 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-display)', color: 'var(--danger)' }}>Delete Venue?</h3>
                 <p className="muted" style={{ fontSize: '0.8125rem' }}>
-                  Are you sure you want to delete campus <strong>{modalTarget.name}</strong> and all its buildings, floors, nodes, and edges? This action cannot be undone.
+                  Are you sure you want to delete Venue <strong>{modalTarget.name}</strong> and all its buildings, floors, nodes, and edges? This action cannot be undone.
                 </p>
                 {modalError && <div className="error">{modalError}</div>}
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '4px' }}>
@@ -1236,7 +1236,7 @@ export default function Dashboard() {
         
         <div style={{ display: 'flex', gap: '16px' }}>
           <div className="badge ok">Offline Simulator Active</div>
-          <div className="badge">Total Campuses: {campuses.length}</div>
+          <div className="badge">Total Venues: {campuses.length}</div>
         </div>
       </div>
 
@@ -1245,11 +1245,11 @@ export default function Dashboard() {
         {/* Left selector sidebar */}
         <aside className="studio-sidebar">
           
-          {/* Campus Selector */}
+          {/* Venue Selector */}
           <div className="sidebar-section">
-            <h3>Select Campus</h3>
+            <h3>Select Venue</h3>
             {loadingCampuses ? (
-              <p className="muted">Loading campuses...</p>
+              <p className="muted">Loading venues...</p>
             ) : (
               <div style={{ display: 'flex', gap: '8px' }}>
                 <select 
@@ -1262,30 +1262,30 @@ export default function Dashboard() {
                   }}
                   style={{ flex: 1 }}
                 >
-                  <option value="">-- Choose Campus --</option>
+                  <option value="">-- Choose Venue --</option>
                   {campuses.map(c => (
                     <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
                 </select>
                 {selectedCampusId && (
-                  <button className="danger" onClick={triggerDeleteCampusModal} title="Delete Campus" style={{ padding: '8px 10px' }}>
+                  <button className="danger" onClick={triggerDeleteCampusModal} title="Delete Venue" style={{ padding: '8px 10px' }}>
                     <Trash2 size={16} />
                   </button>
                 )}
               </div>
             )}
 
-            {/* Quick Add Campus */}
+            {/* Quick Add Venue */}
             <form onSubmit={handleCreateCampus} style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '12px' }}>
               <input 
-                placeholder="New Campus name" 
+                placeholder="New Venue name" 
                 value={newCampusName} 
                 onChange={(e) => setNewCampusName(e.target.value)} 
                 style={{ padding: '8px 10px', fontSize: '0.8125rem' }}
                 required
               />
               <button type="submit" style={{ width: '100%', padding: '6px 10px', justifyContent: 'center' }}>
-                <Plus size={14} /> Add Campus
+                <Plus size={14} /> Add Venue
               </button>
             </form>
           </div>
@@ -1293,7 +1293,7 @@ export default function Dashboard() {
           {/* Buildings and Floors Accordion */}
           {selectedCampusId && (
             <div className="sidebar-section" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-              <h3>Campus Layout Structures</h3>
+              <h3>Venue Layout Structures</h3>
               
               <div className="accordion-list">
                 {buildings.map(b => {
@@ -1465,7 +1465,7 @@ export default function Dashboard() {
               <div>
                 <h2>No Floor Selected</h2>
                 <p className="muted" style={{ maxWidth: '450px', margin: '8px auto 0' }}>
-                  Select a Campus first. Create a Building and Floor on the left, then click on the Floor level to load the interactive designer blueprint.
+                  Select a Venue first. Create a Building and Floor on the left, then click on the Floor level to load the interactive designer blueprint.
                 </p>
               </div>
             </div>

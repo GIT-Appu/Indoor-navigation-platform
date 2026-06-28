@@ -20,7 +20,7 @@ export default function Layout() {
       <aside className="sidebar">
         <div className="brand">
           <Compass size={22} style={{ color: '#6366f1' }} />
-          <span>Campus Navigator</span>
+          <span>Indoor Navigator</span>
         </div>
         <nav>
           <NavLink to="/" end>

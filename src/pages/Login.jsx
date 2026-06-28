@@ -37,33 +37,33 @@ export default function Login() {
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '8px' }}>
           <Compass size={44} style={{ color: '#6366f1' }} />
         </div>
-        <h1>Campus Navigator</h1>
+        <h1>Indoor Navigator</h1>
         <p className="muted">Admin Dashboard Access</p>
-        
-        <input 
-          type="email" 
-          placeholder="Email Address" 
+
+        <input
+          type="email"
+          placeholder="Email Address"
           value={email}
-          onChange={(e) => setEmail(e.target.value)} 
-          required 
+          onChange={(e) => setEmail(e.target.value)}
+          required
         />
-        <input 
-          type="password" 
-          placeholder="Password" 
-          value={password} 
-          onChange={(e) => setPassword(e.target.value)} 
-          required 
+        <input
+          type="password"
+          placeholder="Password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          required
         />
-        
+
         {error && <div className="error">{error}</div>}
-        
+
         <button type="submit" disabled={busy} className="primary" style={{ justifyContent: 'center', marginTop: '4px' }}>
           {busy ? 'Please wait…' : mode === 'signin' ? 'Sign in' : 'Create account'}
         </button>
-        
-        <button 
-          type="button" 
-          className="link" 
+
+        <button
+          type="button"
+          className="link"
           onClick={() => {
             setMode(mode === 'signin' ? 'signup' : 'signin')
             setError(null)
